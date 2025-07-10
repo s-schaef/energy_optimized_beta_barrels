@@ -193,7 +193,10 @@ def align_monomer_from_file(input_pdb, output_pdb=None):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Align monomer to standard orientation')
+    parser = argparse.ArgumentParser(description='Align monomer to standard orientation\
+                                     (1st principal axis with z-axis,\
+                                      2nd principal axis with x-axis,\
+                                      centered at origin)')
     parser.add_argument('--input', required=True, help='Input PDB file')
     parser.add_argument('--output', help='Output PDB file (optional)')
     
