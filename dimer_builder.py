@@ -51,8 +51,8 @@ class DimerBuilder:
     def build_dimer(self, 
                    separation_distance: float,
                    z_rotation: float = 0.0,
-                   xy_rotation: float = 0.0, 
-                   tilt: float = 0.0,
+                   x_rotation: float = 0.0, 
+                   y_rotation: float = 0.0,
                    output_pdb: Optional[str] = None) -> str:
         """
         Build a dimer with specified geometry parameters.
@@ -64,8 +64,8 @@ class DimerBuilder:
         Parameters:
             separation_distance (float): Distance between monomer centers (Angstroms)
             z_rotation (float): Rotation around z-axis applied to both monomers (degrees)
-            xy_rotation (float): Rotation around x-axis applied to both monomers (degrees)  
-            tilt (float): Rotation around y-axis applied to both monomers (degrees)
+            x_rotation (float): Rotation around x-axis applied to both monomers (degrees)  
+            y_rotation (float): Rotation around y-axis applied to both monomers (degrees)
             output_pdb (str, optional): Output PDB filename
             
         Returns:
@@ -92,28 +92,28 @@ class DimerBuilder:
                 ag=protein2
             )(protein2)
         
-        if xy_rotation != 0.0:
+        if x_rotation != 0.0:
             # Rotate around x-axis
             protein1 = rotate.rotateby(
-                angle=xy_rotation,
+                angle=x_rotation,
                 direction=[1, 0, 0],
                 ag=protein1
             )(protein1)
             protein2 = rotate.rotateby(
-                angle=xy_rotation,
+                angle=x_rotation,
                 direction=[1, 0, 0],
                 ag=protein2
             )(protein2)
         
-        if tilt != 0.0:
+        if y_rotation != 0.0:
             # Rotate around y-axis
             protein1 = rotate.rotateby(
-                angle=tilt,
+                angle=y_rotation,
                 direction=[0, 1, 0],
                 ag=protein1
             )(protein1)
             protein2 = rotate.rotateby(
-                angle=tilt,
+                angle=y_rotation,
                 direction=[0, 1, 0],
                 ag=protein2
             )(protein2)
@@ -171,8 +171,8 @@ class DimerBuilder:
     def evaluate_geometry(self, 
                          separation_distance: float,
                          z_rotation: float = 0.0,
-                         xy_rotation: float = 0.0,
-                         tilt: float = 0.0,
+                         x_rotation: float = 0.0,
+                         y_rotation: float = 0.0,
                          cleanup: bool = True) -> Dict[str, float]:
         """
         Build and score a dimer with given geometry parameters.
@@ -180,8 +180,8 @@ class DimerBuilder:
         Parameters:
             separation_distance (float): Distance between monomer centers
             z_rotation (float): Rotation around z-axis (degrees)
-            xy_rotation (float): Rotation around xy-axis (degrees)
-            tilt (float): Tilt angle (degrees)
+            x_rotation (float): Rotation around x-axis (degrees)
+            y_rotation (float): Rotation around y-axis (degrees)
             cleanup (bool): Whether to delete temporary PDB file
             
         Returns:
@@ -191,8 +191,8 @@ class DimerBuilder:
         dimer_pdb = self.build_dimer(
             separation_distance=separation_distance,
             z_rotation=z_rotation,
-            xy_rotation=xy_rotation,
-            tilt=tilt
+            x_rotation=x_rotation,
+            y_rotation=y_rotation
         )
         
         # Score dimer
@@ -202,8 +202,8 @@ class DimerBuilder:
         scores.update({
             'separation_distance': separation_distance,
             'z_rotation': z_rotation,
-            'xy_rotation': xy_rotation,
-            'tilt': tilt
+            'x_rotation': x_rotation,
+            'y_rotation': y_rotation
         })
         
         # Cleanup temporary file
@@ -234,8 +234,8 @@ class DimerBuilder:
                          separation_distance: float, 
                          n_subunits: int,
                          z_rotation: float = 0.0,
-                         xy_rotation: float = 0.0,
-                         tilt: float = 0.0) -> Dict[str, float]:
+                         x_rotation: float = 0.0,
+                         y_rotation: float = 0.0) -> Dict[str, float]:
         """
         Convert dimer geometry to ring building parameters.
         
@@ -243,8 +243,8 @@ class DimerBuilder:
             separation_distance (float): Optimal separation from dimer optimization
             n_subunits (int): Number of subunits in target ring
             z_rotation (float): Optimal z-rotation from dimer optimization
-            xy_rotation (float): Optimal xy-rotation from dimer optimization
-            tilt (float): Optimal tilt from dimer optimization
+            x_rotation (float): Optimal x-rotation from dimer optimization
+            y_rotation (float): Optimal y-rotation from dimer optimization
             
         Returns:
             Dict[str, float]: Ring building parameters
@@ -254,8 +254,8 @@ class DimerBuilder:
         return {
             'radius': radius,
             'z_rotation': z_rotation,
-            'xy_rotation': xy_rotation,
-            'tilt': tilt,
+            'x_rotation': x_rotation,
+            'y_rotation': y_rotation,
             'separation_distance': separation_distance,
             'n_subunits': n_subunits
         }
@@ -280,7 +280,7 @@ def test_dimer_builder(monomer_pdb: str, output_dir: str = '.'):
         {'separation_distance': 12.0, 'z_rotation': 0.0},
         {'separation_distance': 15.0, 'z_rotation': 0.0},
         {'separation_distance': 12.0, 'z_rotation': 180.0},
-        {'separation_distance': 12.0, 'z_rotation': 0.0, 'xy_rotation': 10.0},
+        {'separation_distance': 12.0, 'z_rotation': 0.0, 'x_rotation': 10.0},
     ]
     
     print("\nTesting different dimer geometries:")
@@ -304,8 +304,8 @@ def test_dimer_builder(monomer_pdb: str, output_dir: str = '.'):
                 scores['separation_distance'], 
                 n_subunits,
                 scores['z_rotation'],
-                scores['xy_rotation'],
-                scores['tilt']
+                scores['x_rotation'],
+                scores['y_rotation']
             )
             print(f"  → {n_subunits}-mer ring radius: {ring_params['radius']:.1f} Å")
 
