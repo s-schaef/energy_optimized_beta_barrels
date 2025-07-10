@@ -235,18 +235,21 @@ class DimerOptimizer:
         
         return combined_fine_results
     
-    def optimize(self, save_results: bool = True) -> Dict:
+    def optimize(self, subunit_range: Tuple[int, int] = (6, 16), save_results: bool = True) -> Dict:
         """
         Run complete coarse-to-fine optimization.
         
         Parameters:
+            subunit_range (tuple): (min, max) number of subunits to optimize for
             save_results (bool): Whether to save results to CSV files
             
         Returns:
             Dict: Optimization results with best parameters
         """
+        min_subunits, max_subunits = subunit_range
         print("="*60)
         print("DIMER GEOMETRY OPTIMIZATION")
+        print(f"Optimizing for {min_subunits}-{max_subunits} subunit rings")
         print("="*60)
         
         # Coarse search
@@ -279,9 +282,13 @@ class DimerOptimizer:
         print(f"  fa_rep: {best_result['fa_rep']:.2f}")
         print(f"  hbond_bb_sc: {best_result['hbond_bb_sc']:.2f}")
         
-        # Calculate ring parameters for different sizes
-        print(f"\nRing parameters for different assembly sizes:")
-        for n_subunits in [50, 51, 52, 53, 54]:
+        # Calculate ring parameters for the specified subunit range
+        print(f"\nRing parameters for {min_subunits}-{max_subunits} subunit assemblies:")
+        subunit_range_list = list(range(min_subunits, max_subunits + 1, max(1, (max_subunits - min_subunits) // 6)))
+        if max_subunits not in subunit_range_list:
+            subunit_range_list.append(max_subunits)
+            
+        for n_subunits in subunit_range_list:
             ring_params = self.builder.get_ring_geometry(
                 best_result['separation_distance'],
                 n_subunits,
@@ -304,13 +311,15 @@ def main():
     
     parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
+    parser.add_argument('--subunit_range', type=int, nargs=2, default=[6, 16], 
+                        help='Range of subunit numbers to optimize for (min max), default: 6 16')
     parser.add_argument('--no_save', action='store_true', help='Do not save results to CSV files')
     
     args = parser.parse_args()
     
     # Run optimization
     optimizer = DimerOptimizer(args.monomer)
-    results = optimizer.optimize(save_results=not args.no_save)
+    results = optimizer.optimize(subunit_range=tuple(args.subunit_range), save_results=not args.no_save)
     
     return results
 
