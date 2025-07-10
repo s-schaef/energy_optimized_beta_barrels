@@ -299,7 +299,7 @@ def test_dimer_builder(monomer_pdb: str, output_dir: str = '.'):
         print(f"  hbond_bb_sc: {scores['hbond_bb_sc']:.2f}")
         
         # Calculate what this would mean for different ring sizes
-        for n_subunits in [6, 8, 10, 12]:
+        for n_subunits in [50, 51, 52]:
             ring_params = builder.get_ring_geometry(
                 scores['separation_distance'], 
                 n_subunits,
