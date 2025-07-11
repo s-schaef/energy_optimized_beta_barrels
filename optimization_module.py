@@ -25,45 +25,54 @@ def evaluate_single_geometry(params_and_monomer):
     """
     params, monomer_pdb = params_and_monomer
     
+    # Suppress all output from worker processes
+    import sys
+    import os
+    import warnings
+    import tempfile
+    
+    # Redirect stdout and stderr to devnull
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    devnull = open(os.devnull, 'w')
+    sys.stdout = devnull
+    sys.stderr = devnull
+    
+    # Suppress warnings
+    warnings.filterwarnings('ignore')
+    
     try:
-        # Suppress all output from worker processes
-        import sys
-        import os
-        import warnings
-        
-        # Redirect stdout and stderr to devnull
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = open(os.devnull, 'w')
-        sys.stderr = open(os.devnull, 'w')
-        
-        # Suppress warnings
-        warnings.filterwarnings('ignore')
-        
         # Create DimerBuilder instance for this process (with suppressed output)
         builder = DimerBuilder(monomer_pdb, initialize_pyrosetta=True)
         
-        # Evaluate geometry
-        scores = builder.evaluate_geometry(**params)
-        
-        # Restore stdout and stderr
-        sys.stdout.close()
-        sys.stderr.close()
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
+        # Use a temporary directory for this evaluation to ensure cleanup
+        with tempfile.TemporaryDirectory(prefix='dimer_eval_') as temp_dir:
+            # Create temporary PDB file in the temp directory
+            temp_pdb = os.path.join(temp_dir, 'dimer.pdb')
+            
+            # Build dimer with specified output location
+            dimer_pdb = builder.build_dimer(
+                separation_distance=params['separation_distance'],
+                z_rotation_1=params['z_rotation_1'],
+                x_rotation_1=params['x_rotation_1'],
+                y_rotation_1=params['y_rotation_1'],
+                z_rotation_2=params['z_rotation_2'],
+                x_rotation_2=params['x_rotation_2'],
+                y_rotation_2=params['y_rotation_2'],
+                output_pdb=temp_pdb
+            )
+            
+            # Score dimer
+            scores = builder.score_dimer(dimer_pdb)
+            
+            # Add geometry parameters to results
+            scores.update(params)
+            
+        # Temporary directory and all files are automatically cleaned up here
         
         return scores
         
     except Exception as e:
-        # Restore stdout/stderr in case of error
-        try:
-            sys.stdout.close()
-            sys.stderr.close()
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-        except:
-            pass
-            
         # Return failed result with high energy
         failed_result = params.copy()
         failed_result.update({
@@ -74,6 +83,15 @@ def evaluate_single_geometry(params_and_monomer):
             'error': str(e)
         })
         return failed_result
+        
+    finally:
+        # Restore stdout and stderr
+        try:
+            devnull.close()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        except:
+            pass
 
 class DimerOptimizer:
     """
