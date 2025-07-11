@@ -26,14 +26,44 @@ def evaluate_single_geometry(params_and_monomer):
     params, monomer_pdb = params_and_monomer
     
     try:
-        # Create DimerBuilder instance for this process
+        # Suppress all output from worker processes
+        import sys
+        import os
+        import warnings
+        
+        # Redirect stdout and stderr to devnull
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = open(os.devnull, 'w')
+        sys.stderr = open(os.devnull, 'w')
+        
+        # Suppress warnings
+        warnings.filterwarnings('ignore')
+        
+        # Create DimerBuilder instance for this process (with suppressed output)
         builder = DimerBuilder(monomer_pdb, initialize_pyrosetta=True)
         
         # Evaluate geometry
         scores = builder.evaluate_geometry(**params)
+        
+        # Restore stdout and stderr
+        sys.stdout.close()
+        sys.stderr.close()
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        
         return scores
         
     except Exception as e:
+        # Restore stdout/stderr in case of error
+        try:
+            sys.stdout.close()
+            sys.stderr.close()
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+        except:
+            pass
+            
         # Return failed result with high energy
         failed_result = params.copy()
         failed_result.update({
