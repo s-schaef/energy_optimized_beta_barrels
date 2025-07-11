@@ -9,7 +9,7 @@ import time
 
 class DimerOptimizer:
     """
-    Optimize dimer geometry using coarse-to-fine grid search.
+    Optimize dimer geometry using coarse-to-fine grid search with asymmetric rotations.
     """
     
     def __init__(self, monomer_pdb: str):
@@ -60,12 +60,13 @@ class DimerOptimizer:
                                 x_rotation_points: List[float], 
                                 y_rotation_points: List[float]) -> List[Dict]:
         """
-        Generate parameter combinations for grid search.
+        Generate parameter combinations for grid search with asymmetric rotations.
+        Z-rotations limited to 180° range since both subunits rotate independently.
         
         Parameters:
             separation_range (tuple): (min, max) separation distance
             separation_points (int): Number of separation distance points
-            z_rotation_points (list): Z-rotation values to test
+            z_rotation_points (list): Z-rotation values to test (0-180° range)
             x_rotation_points (list): X-rotation values to test
             y_rotation_points (list): Y-rotation values to test
             
@@ -76,17 +77,24 @@ class DimerOptimizer:
         sep_min, sep_max = separation_range
         separation_distances = np.linspace(sep_min, sep_max, separation_points)
         
-        # Generate all combinations
         parameter_combinations = []
-        for sep_dist, z_rot, x_rot, y_rot in itertools.product(
-            separation_distances, z_rotation_points, x_rotation_points, y_rotation_points
-        ):
-            parameter_combinations.append({
-                'separation_distance': sep_dist,
-                'z_rotation': z_rot,
-                'x_rotation': x_rot,
-                'y_rotation': y_rot
-            })
+        
+        # Asymmetric search: each monomer can have different rotations
+        # Z-rotations use reduced 180° range since relative orientations repeat after 180°
+        for sep_dist in separation_distances:
+            for z1, x1, y1, z2, x2, y2 in itertools.product(
+                z_rotation_points, x_rotation_points, y_rotation_points,  # Monomer 1
+                z_rotation_points, x_rotation_points, y_rotation_points   # Monomer 2
+            ):
+                parameter_combinations.append({
+                    'separation_distance': sep_dist,
+                    'z_rotation_1': z1,
+                    'x_rotation_1': x1,
+                    'y_rotation_1': y1,
+                    'z_rotation_2': z2,
+                    'x_rotation_2': x2,
+                    'y_rotation_2': y2
+                })
         
         return parameter_combinations
     
@@ -107,7 +115,7 @@ class DimerOptimizer:
         start_time = time.time()
         
         for i, params in enumerate(parameter_combinations):
-            if i % 10 == 0:
+            if i % 100 == 0:
                 elapsed = time.time() - start_time
                 if i > 0:
                     avg_time = elapsed / i
@@ -145,19 +153,25 @@ class DimerOptimizer:
         print("Starting coarse grid search...")
         
         # Define coarse search parameters
+        # Z-rotations: 0-180° range (6 points every 36°)
+        # X,Y rotations: ±45° range (5 points every 22.5°)
         separation_range = (self.base_separation * 0.8, self.base_separation * 1.2)
         separation_points = 5
-        z_rotation_points = [0, 90, 180, 270]
-        x_rotation_points = [-30, 0, 30]
-        y_rotation_points = [-30, 0, 30]
+        z_rotation_points = [0, 36, 72, 108, 144, 180]  # 6 points in 180° range
+        x_rotation_points = [-45, -22.5, 0, 22.5, 45]   # 5 points in ±45° range
+        y_rotation_points = [-45, -22.5, 0, 22.5, 45]   # 5 points in ±45° range
         
         print(f"Coarse search parameters:")
         print(f"  Separation distance: {separation_points} points from {separation_range[0]:.1f} to {separation_range[1]:.1f} Å")
-        print(f"  Z-rotation: {z_rotation_points}")
+        print(f"  Z-rotation: {z_rotation_points} (180° range)")
         print(f"  X-rotation: {x_rotation_points}")
         print(f"  Y-rotation: {y_rotation_points}")
         
-        total_combinations = separation_points * len(z_rotation_points) * len(x_rotation_points) * len(y_rotation_points)
+        total_combinations = (separation_points * 
+                            len(z_rotation_points)**2 * 
+                            len(x_rotation_points)**2 * 
+                            len(y_rotation_points)**2)
+        
         print(f"Total combinations: {total_combinations}")
         
         # Generate parameter combinations
@@ -174,7 +188,7 @@ class DimerOptimizer:
         
         return results
     
-    def fine_search(self, coarse_results: pd.DataFrame, top_n: int = 3) -> pd.DataFrame:
+    def fine_search(self, coarse_results: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
         """
         Perform fine grid search around the best results from coarse search.
         
@@ -193,9 +207,8 @@ class DimerOptimizer:
         for i, row in top_results.iterrows():
             print(f"  {i+1}. Score: {row['total_score']:.2f}, "
                   f"Sep: {row['separation_distance']:.1f}, "
-                  f"Z: {row['z_rotation']:.0f}, "
-                  f"X: {row['x_rotation']:.0f}, "
-                  f"Y: {row['y_rotation']:.0f}")
+                  f"Z1: {row['z_rotation_1']:.0f}, Z2: {row['z_rotation_2']:.0f}, "
+                  f"X1: {row['x_rotation_1']:.0f}, X2: {row['x_rotation_2']:.0f}")
         
         all_fine_results = []
         
@@ -204,40 +217,72 @@ class DimerOptimizer:
             
             # Define fine search ranges around this result
             sep_center = row['separation_distance']
-            z_center = row['z_rotation']
-            x_center = row['x_rotation'] 
-            y_center = row['y_rotation']
             
-            # Smaller ranges for fine search
-            sep_range = (sep_center - 1.0, sep_center + 1.0)  # ±1 Å
-            z_range = [z_center - 30, z_center - 15, z_center, z_center + 15, z_center + 30]  # ±30° in 15° steps
-            x_range = [x_center - 15, x_center - 7.5, x_center, x_center + 7.5, x_center + 15]  # ±15° in 7.5° steps
-            y_range = [y_center - 15, y_center - 7.5, y_center, y_center + 7.5, y_center + 15]  # ±15° in 7.5° steps
+            # Monomer 1 rotations
+            z1_center = row['z_rotation_1']
+            x1_center = row['x_rotation_1'] 
+            y1_center = row['y_rotation_1']
             
-            # Handle angle wrapping for z_rotation
-            z_range = [(z % 360) for z in z_range]
+            # Monomer 2 rotations
+            z2_center = row['z_rotation_2']
+            x2_center = row['x_rotation_2']
+            y2_center = row['y_rotation_2']
             
-            parameter_combinations = self._generate_parameter_grid(
-                sep_range, 5,  # 5 separation points
-                z_range, x_range, y_range
-            )
+            # Fine search ranges
+            sep_range = (sep_center - 1.0, sep_center + 1.0)  # ±1.0 Å
             
-            fine_results = self._evaluate_parameter_set(parameter_combinations)
+            # ±18° in 6° steps for z-rotations (5 points each)
+            z1_range = [z1_center - 18, z1_center - 9, z1_center, z1_center + 9, z1_center + 18]
+            z2_range = [z2_center - 18, z2_center - 9, z2_center, z2_center + 9, z2_center + 18]
+            
+            # ±11.25° in 5.625° steps for x,y rotations (5 points each)  
+            x1_range = [x1_center - 11.25, x1_center - 5.625, x1_center, x1_center + 5.625, x1_center + 11.25]
+            y1_range = [y1_center - 11.25, y1_center - 5.625, y1_center, y1_center + 5.625, y1_center + 11.25]
+            x2_range = [x2_center - 11.25, x2_center - 5.625, x2_center, x2_center + 5.625, x2_center + 11.25]
+            y2_range = [y2_center - 11.25, y2_center - 5.625, y2_center, y2_center + 5.625, y2_center + 11.25]
+            
+            # Handle angle bounds
+            z1_range = [max(0, min(180, z)) for z in z1_range]  # Keep z in 0-180° range
+            z2_range = [max(0, min(180, z)) for z in z2_range]
+            
+            # Generate fine grid
+            fine_combinations = []
+            sep_distances = np.linspace(sep_range[0], sep_range[1], 5)  # 5 separation points
+            
+            for sep_dist in sep_distances:
+                for z1, x1, y1, z2, x2, y2 in itertools.product(
+                    z1_range, x1_range, y1_range, z2_range, x2_range, y2_range
+                ):
+                    fine_combinations.append({
+                        'separation_distance': sep_dist,
+                        'z_rotation_1': z1,
+                        'x_rotation_1': x1,
+                        'y_rotation_1': y1,
+                        'z_rotation_2': z2,
+                        'x_rotation_2': x2,
+                        'y_rotation_2': y2
+                    })
+            
+            print(f"  Fine search: {len(fine_combinations)} combinations")
+            fine_results = self._evaluate_parameter_set(fine_combinations)
             all_fine_results.append(fine_results)
         
         # Combine all fine search results
         combined_fine_results = pd.concat(all_fine_results, ignore_index=True)
         
         # Remove duplicates and sort
+        parameter_columns = ['separation_distance', 'z_rotation_1', 'x_rotation_1', 'y_rotation_1',
+                           'z_rotation_2', 'x_rotation_2', 'y_rotation_2']
         combined_fine_results = combined_fine_results.drop_duplicates(
-            subset=['separation_distance', 'z_rotation', 'x_rotation', 'y_rotation']
+            subset=parameter_columns
         ).sort_values('total_score').reset_index(drop=True)
         
         return combined_fine_results
     
-    def optimize(self, subunit_range: Tuple[int, int] = (6, 16), save_results: bool = True) -> Dict:
+    def optimize(self, subunit_range: Tuple[int, int] = (6, 16), 
+                save_results: bool = True) -> Dict:
         """
-        Run complete coarse-to-fine optimization.
+        Run complete coarse-to-fine optimization with asymmetric rotations.
         
         Parameters:
             subunit_range (tuple): (min, max) number of subunits to optimize for
@@ -247,10 +292,12 @@ class DimerOptimizer:
             Dict: Optimization results with best parameters
         """
         min_subunits, max_subunits = subunit_range
-        print("="*60)
-        print("DIMER GEOMETRY OPTIMIZATION")
+        print("="*70)
+        print("DIMER GEOMETRY OPTIMIZATION - ASYMMETRIC ROTATIONS")
         print(f"Optimizing for {min_subunits}-{max_subunits} subunit rings")
-        print("="*60)
+        print("Z-rotations: 0-180° range (reduced due to symmetry)")
+        print("X,Y rotations: ±45° range")
+        print("="*70)
         
         # Coarse search
         coarse_results = self.coarse_search()
@@ -269,14 +316,15 @@ class DimerOptimizer:
         # Get best result
         best_result = fine_results.iloc[0]
         
-        print("\n" + "="*60)
+        print("\n" + "="*70)
         print("OPTIMIZATION COMPLETE")
-        print("="*60)
+        print("="*70)
         print(f"Best parameters found:")
         print(f"  Separation distance: {best_result['separation_distance']:.2f} Å")
-        print(f"  Z-rotation: {best_result['z_rotation']:.1f}°")
-        print(f"  X-rotation: {best_result['x_rotation']:.1f}°") 
-        print(f"  Y-rotation: {best_result['y_rotation']:.1f}°")
+        print(f"  Monomer 1 rotations: Z={best_result['z_rotation_1']:.1f}°, "
+              f"X={best_result['x_rotation_1']:.1f}°, Y={best_result['y_rotation_1']:.1f}°")
+        print(f"  Monomer 2 rotations: Z={best_result['z_rotation_2']:.1f}°, "
+              f"X={best_result['x_rotation_2']:.1f}°, Y={best_result['y_rotation_2']:.1f}°")
         print(f"  Total score: {best_result['total_score']:.2f}")
         print(f"  fa_atr: {best_result['fa_atr']:.2f}")
         print(f"  fa_rep: {best_result['fa_rep']:.2f}")
@@ -292,9 +340,12 @@ class DimerOptimizer:
             ring_params = self.builder.get_ring_geometry(
                 best_result['separation_distance'],
                 n_subunits,
-                best_result['z_rotation'],
-                best_result['x_rotation'], 
-                best_result['y_rotation']
+                best_result['z_rotation_1'],
+                best_result['x_rotation_1'], 
+                best_result['y_rotation_1'],
+                best_result['z_rotation_2'],
+                best_result['x_rotation_2'],
+                best_result['y_rotation_2']
             )
             print(f"  {n_subunits}-mer: radius = {ring_params['radius']:.1f} Å")
         
@@ -309,7 +360,7 @@ def main():
     """Main function for command-line usage."""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly')
+    parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly using asymmetric rotations')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
     parser.add_argument('--subunit_range', type=int, nargs=2, default=[6, 16], 
                         help='Range of subunit numbers to optimize for (min max), default: 6 16')
@@ -319,7 +370,10 @@ def main():
     
     # Run optimization
     optimizer = DimerOptimizer(args.monomer)
-    results = optimizer.optimize(subunit_range=tuple(args.subunit_range), save_results=not args.no_save)
+    results = optimizer.optimize(
+        subunit_range=tuple(args.subunit_range), 
+        save_results=not args.no_save
+    )
     
     return results
 
