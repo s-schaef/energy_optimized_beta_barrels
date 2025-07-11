@@ -6,21 +6,70 @@ from typing import Dict, List, Tuple
 import itertools
 from dimer_builder import DimerBuilder
 import time
+import multiprocessing as mp
+from functools import partial
+import os
+import tempfile
+import shutil
+
+def evaluate_single_geometry(params_and_monomer):
+    """
+    Worker function to evaluate a single geometry in parallel.
+    Each process creates its own DimerBuilder to avoid sharing issues.
+    
+    Parameters:
+        params_and_monomer (tuple): (parameters_dict, monomer_pdb_path)
+        
+    Returns:
+        dict: Evaluation results
+    """
+    params, monomer_pdb = params_and_monomer
+    
+    try:
+        # Create DimerBuilder instance for this process
+        builder = DimerBuilder(monomer_pdb, initialize_pyrosetta=True)
+        
+        # Evaluate geometry
+        scores = builder.evaluate_geometry(**params)
+        return scores
+        
+    except Exception as e:
+        # Return failed result with high energy
+        failed_result = params.copy()
+        failed_result.update({
+            'total_score': 999999,
+            'fa_atr': 999999,
+            'fa_rep': 999999,
+            'hbond_bb_sc': 0,
+            'error': str(e)
+        })
+        return failed_result
 
 class DimerOptimizer:
     """
-    Optimize dimer geometry using coarse-to-fine grid search with asymmetric rotations.
+    Optimize dimer geometry using parallel coarse-to-fine grid search with asymmetric rotations.
     """
     
-    def __init__(self, monomer_pdb: str):
+    def __init__(self, monomer_pdb: str, n_processes: int = None):
         """
         Initialize optimizer with aligned monomer.
         
         Parameters:
             monomer_pdb (str): Path to aligned monomer PDB file
+            n_processes (int): Number of processes to use. If None, uses all available cores.
         """
-        self.builder = DimerBuilder(monomer_pdb)
-        self.monomer_pdb = monomer_pdb
+        self.monomer_pdb = os.path.abspath(monomer_pdb)  # Use absolute path for multiprocessing
+        
+        # Set up multiprocessing
+        if n_processes is None:
+            self.n_processes = mp.cpu_count()
+        else:
+            self.n_processes = min(n_processes, mp.cpu_count())
+        
+        print(f"Using {self.n_processes} processes for parallel optimization")
+        
+        # Create a single builder instance for main process calculations
+        self.builder = DimerBuilder(self.monomer_pdb)
         
         # Calculate adaptive separation distance range
         self.base_separation = self._calculate_ca_footprint_radius()
@@ -98,9 +147,9 @@ class DimerOptimizer:
         
         return parameter_combinations
     
-    def _evaluate_parameter_set(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
+    def _evaluate_parameter_set_parallel(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
         """
-        Evaluate a set of parameter combinations.
+        Evaluate a set of parameter combinations in parallel.
         
         Parameters:
             parameter_combinations (list): List of parameter dictionaries
@@ -108,10 +157,58 @@ class DimerOptimizer:
         Returns:
             pd.DataFrame: Results with scores and parameters
         """
+        total_combinations = len(parameter_combinations)
+        print(f"Evaluating {total_combinations} parameter combinations using {self.n_processes} processes...")
+        
+        # Prepare input for worker processes
+        work_items = [(params, self.monomer_pdb) for params in parameter_combinations]
+        
+        start_time = time.time()
+        results = []
+        
+        # Use multiprocessing Pool for parallel evaluation
+        try:
+            with mp.Pool(processes=self.n_processes) as pool:
+                # Use imap for progress tracking
+                result_iter = pool.imap(evaluate_single_geometry, work_items)
+                
+                for i, result in enumerate(result_iter):
+                    results.append(result)
+                    
+                    # Progress updates
+                    if (i + 1) % 100 == 0 or (i + 1) == total_combinations:
+                        elapsed = time.time() - start_time
+                        avg_time = elapsed / (i + 1)
+                        remaining = (total_combinations - i - 1) * avg_time
+                        print(f"Progress: {i+1}/{total_combinations} ({(i+1)/total_combinations*100:.1f}%) - "
+                              f"ETA: {remaining/60:.1f} minutes")
+                
+        except KeyboardInterrupt:
+            print("Optimization interrupted by user")
+            raise
+        except Exception as e:
+            print(f"Error in parallel evaluation: {e}")
+            print("Falling back to sequential evaluation...")
+            return self._evaluate_parameter_set_sequential(parameter_combinations)
+        
+        elapsed = time.time() - start_time
+        print(f"Completed {total_combinations} evaluations in {elapsed/60:.1f} minutes")
+        
+        return pd.DataFrame(results)
+    
+    def _evaluate_parameter_set_sequential(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
+        """
+        Fallback sequential evaluation if parallel fails.
+        
+        Parameters:
+            parameter_combinations (list): List of parameter dictionaries
+            
+        Returns:
+            pd.DataFrame: Results with scores and parameters
+        """
+        print("Running sequential evaluation...")
         results = []
         total_combinations = len(parameter_combinations)
-        
-        print(f"Evaluating {total_combinations} parameter combinations...")
         start_time = time.time()
         
         for i, params in enumerate(parameter_combinations):
@@ -180,8 +277,8 @@ class DimerOptimizer:
             z_rotation_points, x_rotation_points, y_rotation_points
         )
         
-        # Evaluate all combinations
-        results = self._evaluate_parameter_set(parameter_combinations)
+        # Evaluate all combinations in parallel
+        results = self._evaluate_parameter_set_parallel(parameter_combinations)
         
         # Sort by total score (lower is better)
         results = results.sort_values('total_score').reset_index(drop=True)
@@ -210,10 +307,10 @@ class DimerOptimizer:
                   f"Z1: {row['z_rotation_1']:.0f}, Z2: {row['z_rotation_2']:.0f}, "
                   f"X1: {row['x_rotation_1']:.0f}, X2: {row['x_rotation_2']:.0f}")
         
-        all_fine_results = []
+        all_fine_combinations = []
         
         for i, row in top_results.iterrows():
-            print(f"\nRefining around result {i+1}...")
+            print(f"\nGenerating fine grid around result {i+1}...")
             
             # Define fine search ranges around this result
             sep_center = row['separation_distance']
@@ -246,14 +343,13 @@ class DimerOptimizer:
             z2_range = [max(0, min(180, z)) for z in z2_range]
             
             # Generate fine grid
-            fine_combinations = []
             sep_distances = np.linspace(sep_range[0], sep_range[1], 5)  # 5 separation points
             
             for sep_dist in sep_distances:
                 for z1, x1, y1, z2, x2, y2 in itertools.product(
                     z1_range, x1_range, y1_range, z2_range, x2_range, y2_range
                 ):
-                    fine_combinations.append({
+                    all_fine_combinations.append({
                         'separation_distance': sep_dist,
                         'z_rotation_1': z1,
                         'x_rotation_1': x1,
@@ -262,22 +358,25 @@ class DimerOptimizer:
                         'x_rotation_2': x2,
                         'y_rotation_2': y2
                     })
-            
-            print(f"  Fine search: {len(fine_combinations)} combinations")
-            fine_results = self._evaluate_parameter_set(fine_combinations)
-            all_fine_results.append(fine_results)
         
-        # Combine all fine search results
-        combined_fine_results = pd.concat(all_fine_results, ignore_index=True)
+        print(f"\nTotal fine search combinations: {len(all_fine_combinations)}")
         
-        # Remove duplicates and sort
+        # Remove duplicates
+        df_combinations = pd.DataFrame(all_fine_combinations)
         parameter_columns = ['separation_distance', 'z_rotation_1', 'x_rotation_1', 'y_rotation_1',
                            'z_rotation_2', 'x_rotation_2', 'y_rotation_2']
-        combined_fine_results = combined_fine_results.drop_duplicates(
-            subset=parameter_columns
-        ).sort_values('total_score').reset_index(drop=True)
+        df_combinations = df_combinations.drop_duplicates(subset=parameter_columns)
+        unique_combinations = df_combinations.to_dict('records')
         
-        return combined_fine_results
+        print(f"Unique combinations after deduplication: {len(unique_combinations)}")
+        
+        # Evaluate all fine combinations in parallel
+        fine_results = self._evaluate_parameter_set_parallel(unique_combinations)
+        
+        # Sort by total score
+        fine_results = fine_results.sort_values('total_score').reset_index(drop=True)
+        
+        return fine_results
     
     def optimize(self, subunit_range: Tuple[int, int] = (6, 16), 
                 save_results: bool = True) -> Dict:
@@ -293,8 +392,9 @@ class DimerOptimizer:
         """
         min_subunits, max_subunits = subunit_range
         print("="*70)
-        print("DIMER GEOMETRY OPTIMIZATION - ASYMMETRIC ROTATIONS")
+        print("PARALLEL DIMER GEOMETRY OPTIMIZATION - ASYMMETRIC ROTATIONS")
         print(f"Optimizing for {min_subunits}-{max_subunits} subunit rings")
+        print(f"Using {self.n_processes} CPU cores")
         print("Z-rotations: 0-180° range (reduced due to symmetry)")
         print("X,Y rotations: ±45° range")
         print("="*70)
@@ -360,16 +460,17 @@ def main():
     """Main function for command-line usage."""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly using asymmetric rotations')
+    parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly using parallel asymmetric rotations')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
     parser.add_argument('--subunit_range', type=int, nargs=2, default=[6, 16], 
                         help='Range of subunit numbers to optimize for (min max), default: 6 16')
+    parser.add_argument('--processes', type=int, help='Number of processes to use (default: all available cores)')
     parser.add_argument('--no_save', action='store_true', help='Do not save results to CSV files')
     
     args = parser.parse_args()
     
     # Run optimization
-    optimizer = DimerOptimizer(args.monomer)
+    optimizer = DimerOptimizer(args.monomer, n_processes=args.processes)
     results = optimizer.optimize(
         subunit_range=tuple(args.subunit_range), 
         save_results=not args.no_save
