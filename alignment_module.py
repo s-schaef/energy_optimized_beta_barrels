@@ -4,12 +4,8 @@
 import warnings
 import numpy as np
 import MDAnalysis as mda
-#from MDAnalysis.analysis import align
-#from MDAnalysis.transformations import rotate
 from MDAnalysis.analysis.dssp import DSSP
 from sklearn.decomposition import PCA
-#from scipy.spatial import distance_matrix, ConvexHull
-#from typing import Dict, List, Tuple, Optional
 
 def are_strands_connected(universe, strand1, strand2, distance_cutoff=3.5, min_hbonds=2):
         """
@@ -267,7 +263,7 @@ class MonomerAligner:
         source_basis = np.column_stack([principal_axes[0], principal_axes[1], principal_axes[2]])
         
         # Target basis
-        target_basis = np.column_stack([z_axis, x_axis, y_axis])
+        target_basis = np.column_stack([z_axis, x_axis, y_axis]) #TODO: probably use y_axis as second axis and remove 90 deg. rotation in ring module
         
         # Rotation matrix
         rotation_matrix = target_basis @ source_basis.T
