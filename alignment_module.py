@@ -263,7 +263,7 @@ class MonomerAligner:
         source_basis = np.column_stack([principal_axes[0], principal_axes[1], principal_axes[2]])
         
         # Target basis
-        target_basis = np.column_stack([z_axis, x_axis, y_axis]) #TODO: probably use y_axis as second axis and remove 90 deg. rotation in ring module
+        target_basis = np.column_stack([z_axis, y_axis, x_axis]) 
         
         # Rotation matrix
         rotation_matrix = target_basis @ source_basis.T
@@ -282,7 +282,21 @@ class MonomerAligner:
             center_of_mass = self.protein.center_of_mass()
             self.protein.translate(-center_of_mass)
 
-        
+        # Rotate protein to have center of mass at positive z and x-axes
+        if self.protein.center_of_mass()[0] < 0:
+            # If center of mass is negative in x, rotate 180 degrees around z-axis
+            rotation_180 = np.array([[-1, 0, 0],
+                                     [0, -1, 0],
+                                     [0, 0, 1]])
+            self.protein.positions = (rotation_180 @ self.protein.positions.T).T
+        if self.protein.center_of_mass()[2] < 0:
+            # If center of mass is negative in z, rotate 180 degrees around x-axis
+            rotation_180 = np.array([[1, 0, 0],
+                                     [0, -1, 0],
+                                     [0, 0, -1]])
+            self.protein.positions = (rotation_180 @ self.protein.positions.T).T
+
+
         # Write output if requested
         if output_file:
             self.protein.write(output_file)
