@@ -92,7 +92,7 @@ class RingOptimizer:
     Optimize ring geometry using parallel coarse-to-fine grid search.
     """
     
-    def __init__(self, monomer_pdb: str, n_subunits: int, angle_range: tuple = None, n_processes: int = None):
+    def __init__(self, monomer_pdb: str, n_subunits: int, n_processes: int = None):
         """
         Initialize optimizer with aligned monomer.
         
@@ -266,6 +266,7 @@ class RingOptimizer:
     
     def optimize(self,
                  optimization_rounds: int = 2,
+                 angle_range: Tuple[float, float] = (-30, 30),
                  save_csv: bool = True) -> Dict:
 
         """
@@ -279,19 +280,17 @@ class RingOptimizer:
             Dict: Optimization results with best parameters
         """
         print("="*70)
-        # print("PARALLEL DIMER GEOMETRY OPTIMIZATION - ASYMMETRIC ROTATIONS")
-        # print(f"Optimizing for {min_subunits}-{max_subunits} subunit rings")
-        # print(f"Using {self.n_processes} CPU cores")
-        # print("Z-rotations: 0-180° range (reduced due to symmetry)")
-        # print("X,Y rotations: ±45° range")
-        print("="*70)
         
         number_configurations = 10  # Number of configurations per parameter range
         total_combinations = (number_configurations ** 2 * optimization_rounds)
         print(f"Total combinations: {total_combinations} in {optimization_rounds} rounds")
 
         radius_range = (self.base_radius * 0.6, self.base_radius) # radius is most likely overestimated by base radius calculation
-        tilt_angle_range = (self.base_tilt_angle - 30, self.base_tilt_angle + 30)
+        if angle_range is not None:
+            tilt_angle_range = angle_range
+        else:
+            # Default tilt angle range if not provided
+            tilt_angle_range = (self.base_tilt_angle - 30, self.base_tilt_angle + 30)
 
 
         # Coarse search
@@ -323,7 +322,11 @@ class RingOptimizer:
 
             # define new search ranges based on best result
             radius_range = (self.base_radius - radius_stepsize*2, self.base_radius + radius_stepsize*2)
-            tilt_angle_range = (self.base_tilt_angle - tilt_angle_stepsize*2, self.base_tilt_angle + tilt_angle_stepsize*2)
+            if angle_range is not None:
+                tilt_angle_range = angle_range
+                print(f"Using fixed tilt angle range: {tilt_angle_range[0]:.2f} to {tilt_angle_range[1]:.2f}°")
+            else:
+                tilt_angle_range = (self.base_tilt_angle - tilt_angle_stepsize*2, self.base_tilt_angle + tilt_angle_stepsize*2)
 
 
 
@@ -335,9 +338,9 @@ class RingOptimizer:
         print(f"  Tilt angle: {best_result['tilt_angle']:.2f}°")
         print(f"  Total score: {best_result['total_score']:.2f}")
         print(f"  fa_atr: {best_result['fa_atr']:.2f}")
-        print(f"  fa_rep: {best_result['fa_rep']:.2f}")
+        print(f"  fa_rep: {best_result['fa_rep']:.2f} (reweighted times 0.01, to allow minor overlap)")
         print(f"  hbond_sr_bb: {best_result['hbond_sr_bb']:.2f}")
-        print(f"  hbond_lr_bb: {best_result['hbond_lr_bb']:.2f}")
+        print(f"  hbond_lr_bb: {best_result['hbond_lr_bb']:.2f} (reweighted times 10, for better hydrogen bond optimization)")
 
         
             
@@ -365,9 +368,10 @@ def main():
     args = parser.parse_args()
     
     # Run optimization
-    optimizer = RingOptimizer(args.monomer, args.n_subunits, args.angle_range, n_processes=args.processes)
+    optimizer = RingOptimizer(args.monomer, args.n_subunits, n_processes=args.processes)
     results = optimizer.optimize(
         optimization_rounds=args.rounds,  # Number of optimization rounds
+        angle_range=tuple(args.angle_range),  # Convert to tuple for consistency
         save_csv=not args.no_csv  # Save results to CSV unless --no_csv is specified
     )
     

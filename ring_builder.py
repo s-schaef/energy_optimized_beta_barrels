@@ -5,11 +5,9 @@ import numpy as np
 import MDAnalysis as mda
 import pyrosetta
 from pyrosetta import rosetta
-from MDAnalysis.transformations import rotate
 from string import ascii_uppercase as auc
 from string import ascii_lowercase as alc
-from typing import Dict, Optional
-import tempfile
+from typing import Dict
 
 
 class RingBuilder:
@@ -132,7 +130,6 @@ class RingBuilder:
             
         center_of_mass = self.ring.atoms.center_of_mass()
         self.ring.atoms.translate(-center_of_mass)
-        print(f"Ring centered at origin (was at {center_of_mass})")
     
     def write_ring_pdb(self, output_pdb: str, centered: bool = True):
         """
