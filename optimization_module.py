@@ -92,7 +92,7 @@ class RingOptimizer:
     Optimize ring geometry using parallel coarse-to-fine grid search.
     """
     
-    def __init__(self, monomer_pdb: str, n_subunits: int, n_processes: int = None):
+    def __init__(self, monomer_pdb: str, n_subunits: int, gasdermin: bool = False, n_processes: int = None):
         """
         Initialize optimizer with aligned monomer.
         
@@ -102,6 +102,7 @@ class RingOptimizer:
         """
         self.monomer_pdb = os.path.abspath(monomer_pdb)  # Use absolute path for multiprocessing
         self.n_subunits = n_subunits
+        self.gasdermin = gasdermin  # Flag for gasdermin-specific modifications
         # Set up multiprocessing
         if n_processes is None:
             self.n_processes = mp.cpu_count()
@@ -111,7 +112,7 @@ class RingOptimizer:
         print(f"Using {self.n_processes} processes for parallel optimization")
         
         # Create a single builder instance for main process calculations
-        self.builder = RingBuilder(self.monomer_pdb)
+        self.builder = RingBuilder(self.monomer_pdb, self.gasdermin)  # gasdermin flag can be set here if needed
         
         # Calculate adaptive separation distance range
         self.base_radius = self._calculate_base_radius()
@@ -218,54 +219,57 @@ class RingOptimizer:
         
         return pd.DataFrame(results)
     
-    # def _evaluate_parameter_set_sequential(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
-    #     """
-    #     Fallback sequential evaluation if parallel fails.
+    def _evaluate_parameter_set_sequential(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
+        """
+        Fallback sequential evaluation if parallel fails.
         
-    #     Parameters:
-    #         parameter_combinations (list): List of parameter dictionaries
+        Parameters:
+            parameter_combinations (list): List of parameter dictionaries
             
-    #     Returns:
-    #         pd.DataFrame: Results with scores and parameters
-    #     """
-    #     print("Running sequential evaluation...")
-    #     results = []
-    #     total_combinations = len(parameter_combinations)
-    #     start_time = time.time()
+        Returns:
+            pd.DataFrame: Results with scores and parameters
+        """
+        print("Running sequential evaluation...")
+        results = []
+        total_combinations = len(parameter_combinations)
+        start_time = time.time()
         
-    #     for i, params in enumerate(parameter_combinations):
-    #         if i % 100 == 0:
-    #             elapsed = time.time() - start_time
-    #             if i > 0:
-    #                 avg_time = elapsed / i
-    #                 remaining = (total_combinations - i) * avg_time
-    #                 print(f"Progress: {i}/{total_combinations} ({i/total_combinations*100:.1f}%) - "
-    #                       f"ETA: {remaining/60:.1f} minutes")
+        for i, params in enumerate(parameter_combinations):
+            if i % 100 == 0:
+                elapsed = time.time() - start_time
+                if i > 0:
+                    avg_time = elapsed / i
+                    remaining = (total_combinations - i) * avg_time
+                    print(f"Progress: {i}/{total_combinations} ({i/total_combinations*100:.1f}%) - "
+                          f"ETA: {remaining/60:.1f} minutes")
             
-    #         try:
-    #             scores = self.builder.score_ring()
-    #             results.append(scores)
-    #         except Exception as e:
-    #             print(f"Error evaluating {params}: {e}")
-    #             # Add failed result with high energy
-    #             failed_result = params.copy()
-    #             failed_result.update({
-    #                 'total_score': 999999,
-    #                 'fa_atr': 999999,
-    #                 'fa_rep': 999999,
-    #                 'hbond_sr_bb': 0,
-    #                 'hbond_lr_bb': 0,
-    #             })
-    #             results.append(failed_result)
+            try:
+                scores = self.builder.score_ring()
+                results.append(scores)
+
+            except Exception as e:
+                print(f"Error evaluating parameters {params}: {e}")
+                # Return failed result with high energy
+                failed_result = params.copy()
+                failed_result.update({
+                    'total_score': 999999,
+                    'fa_atr': 999999,
+                    'fa_rep': 999999,
+                    'hbond_sr_bb': 0,
+                    'hbond_lr_bb': 0,
+                    'error': str(e)
+                })
+                return failed_result
         
-    #     elapsed = time.time() - start_time
-    #     print(f"Completed {total_combinations} evaluations in {elapsed/60:.1f} minutes")
+        elapsed = time.time() - start_time
+        print(f"Completed {total_combinations} evaluations in {elapsed/60:.1f} minutes")
         
-    #     return pd.DataFrame(results)
+        return pd.DataFrame(results)
     
     
     def optimize(self,
                  optimization_rounds: int = 2,
+                 radius_range: Tuple[float, float] = (80, 100),
                  angle_range: Tuple[float, float] = (-30, 30),
                  save_csv: bool = True) -> Dict:
 
@@ -285,7 +289,6 @@ class RingOptimizer:
         total_combinations = (number_configurations ** 2 * optimization_rounds)
         print(f"Total combinations: {total_combinations} in {optimization_rounds} rounds")
 
-        radius_range = (self.base_radius * 0.6, self.base_radius) # radius is most likely overestimated by base radius calculation
         if angle_range is not None:
             tilt_angle_range = angle_range
         else:
@@ -315,18 +318,24 @@ class RingOptimizer:
                 results.to_csv(f'round{round}_results.csv', index=False)
                 print(f"Results saved to 'round{round}_results.csv'")
         
-            # Get best result and update search parameters
-            best_result = results.iloc[0]
-            self.base_radius = best_result['radius']
-            self.base_tilt_angle = best_result['tilt_angle']
+            # Get best results and update search parameters
+            best_result = results.iloc[0]  # Best result is the first row after sorting
+
+            self.base_radius = results.iloc[0:2]['radius'].mean() # take average of best two results
+            self.base_tilt_angle = results.iloc[0:2]['tilt_angle'].mean() # take average of best two results
 
             # define new search ranges based on best result
-            radius_range = (self.base_radius - radius_stepsize*2, self.base_radius + radius_stepsize*2)
-            if angle_range is not None:
-                tilt_angle_range = angle_range
-                print(f"Using fixed tilt angle range: {tilt_angle_range[0]:.2f} to {tilt_angle_range[1]:.2f}°")
-            else:
-                tilt_angle_range = (self.base_tilt_angle - tilt_angle_stepsize*2, self.base_tilt_angle + tilt_angle_stepsize*2)
+            # if radius_range is not None:
+            #     radius_range = radius_range
+            #     print(f"Using fixed radius range: {radius_range[0]:.2f} to {radius_range[1]:.2f} Å")
+            # else:
+            radius_range = (self.base_radius - radius_stepsize, self.base_radius + radius_stepsize)
+
+            # if angle_range is not None:
+            #     tilt_angle_range = angle_range
+            #     print(f"Using fixed tilt angle range: {tilt_angle_range[0]:.2f} to {tilt_angle_range[1]:.2f}°")
+            # else:
+            tilt_angle_range = (self.base_tilt_angle - tilt_angle_stepsize, self.base_tilt_angle + tilt_angle_stepsize)
 
 
 
@@ -361,16 +370,26 @@ def main():
     parser.add_argument('--n_subunits', type=int, required=True, help='Number of subunits in the ring')
     parser.add_argument('--angle_range', type=float, nargs=2, default=[-30, 30],
                         help='Range of tilt angles for the beta-sheet in degrees (default: -30 to 30)')
+    parser.add_argument('--radius_range', type=float, nargs=2, default=None,
+                        help='Range of radii for the ring assembly in Angstroms (default: None)')
     parser.add_argument('--processes', type=int, help='Number of processes to use (default: all available cores)')
     parser.add_argument('--no_csv', action='store_true', help='Do not save results to CSV files')
     parser.add_argument('--rounds', type=int, default=2, help='Number of optimization rounds (default: 2)')
+    parser.add_argument('--gasdermin', action='store_true', help='Use empirically tweaked values useful for gasdermin-family proteins (default: False)')
     
     args = parser.parse_args()
     
     # Run optimization
-    optimizer = RingOptimizer(args.monomer, args.n_subunits, n_processes=args.processes)
+    optimizer = RingOptimizer(args.monomer, args.n_subunits, args.gasdermin, n_processes=args.processes)
+    if args.radius_range is None:
+        # Use adaptive radius based on the monomer
+        radius_range = (optimizer.base_radius * 0.6, optimizer.base_radius) # base radius most likely overestimates the radius, so we use 60% of it as minimum
+    else:
+        radius_range = tuple(args.radius_range)
+
     results = optimizer.optimize(
         optimization_rounds=args.rounds,  # Number of optimization rounds
+        radius_range=tuple(radius_range),  # Convert to tuple for consistency
         angle_range=tuple(args.angle_range),  # Convert to tuple for consistency
         save_csv=not args.no_csv  # Save results to CSV unless --no_csv is specified
     )

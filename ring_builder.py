@@ -18,7 +18,7 @@ class RingBuilder:
     outward when positioned in the ring.
     """
     
-    def __init__(self, monomer_pdb: str):
+    def __init__(self, monomer_pdb: str, gasdermin: bool = False):
         """
         Initialize ring builder with aligned monomer.
         
@@ -39,6 +39,9 @@ class RingBuilder:
         if len(self.monomer_atoms) == 0:
             raise ValueError(f"No protein atoms found in {monomer_pdb}")
         
+        self.gasdermin = gasdermin  # Flag for gasdermin-specific modifications
+        if self.gasdermin:
+            print("Gasdermin-specific modifications enabled: applying additional y-rotation adjustments")
         self.ring = None
         self.scorefxn = None
         self.output_pdb = None
@@ -53,8 +56,8 @@ class RingBuilder:
         pyrosetta.init('-mute all')
         
         self.scorefxn = pyrosetta.create_score_function('empty')
-        self.scorefxn.set_weight(rosetta.core.scoring.fa_atr, 1) # downscaled to give more importance to hbonds
-        self.scorefxn.set_weight(rosetta.core.scoring.fa_rep, 0.01) # downscaled to give more importance to hbonds
+        self.scorefxn.set_weight(rosetta.core.scoring.fa_atr, 0.9) # downscaled to give more importance to hbonds
+        self.scorefxn.set_weight(rosetta.core.scoring.fa_rep, 0.02) # downscaled to give more importance to hbonds
         self.scorefxn.set_weight(rosetta.core.scoring.hbond_sr_bb, 1) # short-range backbone hydrogen bonds
         self.scorefxn.set_weight(rosetta.core.scoring.hbond_lr_bb, 10.0) # long-range backbone hydrogen bonds
         
@@ -94,6 +97,9 @@ class RingBuilder:
             if tilt_angle != 0.0:
                 protein.rotateby(tilt_angle, axis=[1, 0, 0])
 
+            if self.gasdermin: # Gasdermin-specific modifications
+                protein.rotateby(10, axis=[0, 1, 0]) # it seems that gasdermin barrels are slightly narrower towards the tip
+
             # Rotate subunit to face the center when it is later positioned in the ring
             angle = 360 * idx / n_subunits
             protein.rotateby(angle, axis=[0, 0, 1])
@@ -110,6 +116,7 @@ class RingBuilder:
 
             # Assign unique segment ID
             protein.segments.segids = segid_list[idx]
+            protein.atoms.chainIDs = segid_list[idx] 
             tmp_universes.append(protein)
 
         # Combine all subunits into a single universe
@@ -147,87 +154,10 @@ class RingBuilder:
 
         if centered:
             self.center_ring()
-
-        # # Ensure output directory exists (only if there's a directory component) #TODO: was this needed?
-        # output_dir = os.path.dirname(output_pdb)
-        # if output_dir:  # Only create directory if dirname returns something
-        #     os.makedirs(output_dir, exist_ok=True)
         
         self.ring.atoms.write(output_pdb)
         print(f"Ring assembly written to {output_pdb}")
 
-    # def evaluate_geometry(self, n_subunits: int, radius: float, tilt_angle: float) -> Dict[str, float]:
-    #     """
-    #     Build and score a ring with given parameters.
-        
-    #     Parameters:
-    #         n_subunits (int): Number of subunits
-    #         radius (float): Ring radius
-    #         tilt_angle (float): Tilt angle
-            
-    #     Returns:
-    #         Dict[str, float]: Score dictionary with geometry parameters
-    #     """
-    #     # Build the ring
-    #     self.build_ring(n_subunits=n_subunits, radius=radius, tilt_angle=tilt_angle)
-        
-    #     # Score it
-    #     scores = self.score_ring()
-        
-    #     # Add geometry parameters
-    #     scores.update({
-    #         'n_subunits': n_subunits,
-    #         'radius': radius,
-    #         'tilt_angle': tilt_angle
-    #     })
-        
-    #     return scores
-
-    # def score_ring(self) -> Dict[str, float]:
-    #     """
-    #     Score the assembled ring using PyRosetta.
-        
-    #     Returns:
-    #         Dict[str, float]: Dictionary containing individual score components
-            
-    #     Raises:
-    #         RuntimeError: If ring hasn't been built yet
-    #     """
-    #     if self.ring is None:
-    #         raise RuntimeError("Ring must be built before scoring. Call build_ring() first.")
-            
-    #     if not hasattr(self, 'scorefxn') or self.scorefxn is None:
-    #         self._initialize_pyrosetta()
-        
-    #     # Create temporary file for scoring
-    #     with tempfile.NamedTemporaryFile(suffix='.pdb', delete=False) as tmp:
-    #         temp_pdb = tmp.name
-        
-    #     try:
-    #         self.write_ring_pdb(temp_pdb, centered=True)
-            
-    #         # Create a PyRosetta pose from the ring
-    #         pose = pyrosetta.pose_from_pdb(temp_pdb)
-            
-    #         # Get total score
-    #         total_score = self.scorefxn(pose)
-            
-    #         # Get individual score components
-    #         score_dict = {
-    #             'total_score': total_score,
-    #             'fa_atr': self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.fa_atr),
-    #             'fa_rep': self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.fa_rep),
-    #             'hbond_sr_bb': self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.hbond_sr_bb),
-    #             'hbond_lr_bb': self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.hbond_lr_bb),
-    #             'n_subunits': len(self.ring.segments)  # Add this for tracking
-    #         }
-            
-    #         return score_dict
-            
-    #     finally:
-    #         # Clean up temporary file
-    #         if os.path.exists(temp_pdb):
-    #             os.remove(temp_pdb)
 
     def score_ring(self) -> Dict[str, float]:
         """
@@ -305,6 +235,7 @@ if __name__ == "__main__":
     parser.add_argument('--output', required=True, help='Circular output PDB file')
     parser.add_argument('--n_subunits', type=int, default=30, help='Number of subunits in the ring (default: 30)')
     parser.add_argument('--score', action='store_true', help='Score the assembly with PyRosetta')
+    parser.add_argument('--gasdermin', action='store_true', help='Enable gasdermin-specific modifications')
     
     args = parser.parse_args()
     
