@@ -5,16 +5,17 @@ import MDAnalysis as mda
 from MDAnalysis.transformations import rotate
 import pyrosetta
 from pyrosetta import rosetta
+from sklearn.decomposition import PCA
+from scipy.spatial import distance_matrix, ConvexHull
+from scipy.spatial.transform import Rotation
+from typing import Dict, List, Tuple, Optional
 import os
 import tempfile
-from typing import Tuple, Dict, Optional
-from sklearn.decomposition import PCA
-import itertools
+import warnings
 
 class DimerBuilder:
     """
-    Build and score protein dimers to find optimal geometry parameters
-    for circular assembly construction using beta-sheet edge-to-edge positioning.
+    Build and score protein dimers with deterministic beta-sheet edge-to-edge positioning.
     """
     
     def __init__(self, monomer_pdb: str, initialize_pyrosetta: bool = True):
@@ -32,166 +33,372 @@ class DimerBuilder:
         if initialize_pyrosetta:
             self._initialize_pyrosetta()
         
-        # Detect beta-sheet region and edge direction
-        self.beta_sheet_info = self._detect_beta_sheet_region()
-        print(f"Detected beta-sheet: {len(self.beta_sheet_info['residues'])} residues")
-        print(f"Beta-sheet direction: [{self.beta_sheet_info['direction'][0]:.3f}, {self.beta_sheet_info['direction'][1]:.3f}]")
+        # Detect beta-sheets in the monomer
+        self.beta_sheet_info = self._detect_largest_beta_sheet()
+        
+        if self.beta_sheet_info is None:
+            warnings.warn("No beta-sheet detected. Will use geometric approach for positioning.")
+            self.has_beta_sheet = False
+        else:
+            self.has_beta_sheet = True
+            print(f"Detected largest beta-sheet:")
+            print(f"  {self.beta_sheet_info['num_residues']} residues")
+            print(f"  Area: {self.beta_sheet_info['area']:.1f} Å²")
+            print(f"  Long edge: {self.beta_sheet_info['rectangle']['long_edge_length']:.1f} Å")
+            print(f"  Short edge: {self.beta_sheet_info['rectangle']['short_edge_length']:.1f} Å")
     
     def _initialize_pyrosetta(self):
         """Initialize PyRosetta with appropriate scoring function."""
-        # Initialize PyRosetta (suppress output)
         pyrosetta.init('-mute all')
         
-        # Create scoring function with only the terms we want
         self.scorefxn = pyrosetta.create_score_function('empty')
+        self.scorefxn.set_weight(rosetta.core.scoring.fa_atr, 1.0)
+        self.scorefxn.set_weight(rosetta.core.scoring.fa_rep, 1.0)
+        self.scorefxn.set_weight(rosetta.core.scoring.hbond_bb_sc, 1.0)
         
-        # Add the specific terms we discussed
-        self.scorefxn.set_weight(rosetta.core.scoring.fa_atr, 1.0)      # attractive VdW
-        self.scorefxn.set_weight(rosetta.core.scoring.fa_rep, 1.0)      # repulsive VdW  
-        self.scorefxn.set_weight(rosetta.core.scoring.hbond_bb_sc, 1.0)  # backbone-sidechain H-bonds
-        
-        print("PyRosetta initialized with scoring terms:")
-        print("  fa_atr: attractive van der Waals")
-        print("  fa_rep: repulsive van der Waals") 
-        print("  hbond_bb_sc: backbone-sidechain hydrogen bonds")
+        print("PyRosetta initialized with scoring terms: fa_atr, fa_rep, hbond_bb_sc")
     
-    def _detect_beta_sheet_region(self) -> Dict:
+    def _detect_largest_beta_sheet(self) -> Optional[Dict]:
         """
-        Detect the main beta-sheet region as the largest rectangular area of 'E' residues.
+        Detect the largest beta-sheet in the monomer.
         
         Returns:
-            Dict: Information about the beta-sheet including residues and edge direction
+            Dict with beta-sheet information or None if detection fails
         """
         try:
-            # Use PyRosetta to assign secondary structure
+            # Load structure in PyRosetta
             pose = pyrosetta.pose_from_pdb(self.monomer_pdb)
             
-            # Get secondary structure using DSSP
+            # Assign secondary structure
             from pyrosetta.rosetta.core.scoring.dssp import Dssp
             dssp = Dssp(pose)
             dssp.insert_ss_into_pose(pose)
             
-            # Get all residues with their positions and secondary structure
-            residue_info = []
-            for i in range(1, pose.total_residue() + 1):  # Rosetta uses 1-based indexing
-                residue = pose.residue(i)
-                ss = pose.secstruct(i)
-                ca_atom = residue.atom("CA")
-                residue_info.append({
-                    'residue_num': i,
-                    'ss': ss,
-                    'pos': np.array([ca_atom.xyz().x, ca_atom.xyz().y, ca_atom.xyz().z])
-                })
+            # Get beta-strand residues
+            beta_residues = []
+            for i in range(1, pose.total_residue() + 1):
+                if pose.secstruct(i) == 'E':
+                    residue = pose.residue(i)
+                    ca_atom = residue.atom("CA")
+                    beta_residues.append({
+                        'res_num': i,
+                        'ca_pos': np.array([ca_atom.xyz().x, ca_atom.xyz().y, ca_atom.xyz().z])
+                    })
             
-            # Find beta-strand residues
-            beta_residues = [r for r in residue_info if r['ss'] == 'E']
+            if len(beta_residues) < 4:
+                return None
             
-            if len(beta_residues) < 3:
-                print("Warning: Less than 3 beta-strand residues found. Using fallback method.")
-                return self._fallback_beta_sheet_detection()
+            # Group into sheets based on proximity
+            sheets = self._group_into_sheets(beta_residues)
             
-            # Find the largest rectangular region of beta-residues
-            beta_sheet_region = self._find_largest_beta_rectangle(beta_residues)
+            # Find largest sheet by fitting rectangles
+            largest_sheet = None
+            max_area = 0
             
-            return beta_sheet_region
+            for sheet_residues in sheets:
+                sheet_info = self._characterize_sheet(sheet_residues)
+                if sheet_info and sheet_info['area'] > max_area:
+                    max_area = sheet_info['area']
+                    largest_sheet = sheet_info
+            
+            return largest_sheet
             
         except Exception as e:
-            print(f"Error in secondary structure detection: {e}")
-            print("Using fallback beta-sheet detection method.")
-            return self._fallback_beta_sheet_detection()
+            print(f"Error in beta-sheet detection: {e}")
+            return None
     
-    def _find_largest_beta_rectangle(self, beta_residues: list) -> Dict:
+    def _group_into_sheets(self, beta_residues: List[Dict]) -> List[List[Dict]]:
+        """Group beta-strand residues into connected sheets based on spatial proximity."""
+        if not beta_residues:
+            return []
+        
+        # Build distance matrix
+        ca_positions = np.array([r['ca_pos'] for r in beta_residues])
+        dist_matrix = distance_matrix(ca_positions, ca_positions)
+        
+        # Simple clustering based on proximity
+        sheets = []
+        unassigned = set(range(len(beta_residues)))
+        
+        while unassigned:
+            current_sheet = [unassigned.pop()]
+            
+            changed = True
+            while changed:
+                changed = False
+                for i in list(unassigned):
+                    for j in current_sheet:
+                        if dist_matrix[i, j] < 10.0:  # 10 Å threshold
+                            current_sheet.append(i)
+                            unassigned.remove(i)
+                            changed = True
+                            break
+            
+            sheet_residues = [beta_residues[i] for i in current_sheet]
+            sheets.append(sheet_residues)
+        
+        return sheets
+    
+    def _characterize_sheet(self, sheet_residues: List[Dict]) -> Optional[Dict]:
+        """Characterize a beta-sheet: fit plane and rectangle."""
+        if len(sheet_residues) < 4:
+            return None
+        
+        ca_positions = np.array([r['ca_pos'] for r in sheet_residues])
+        
+        # Fit plane using PCA
+        center = np.mean(ca_positions, axis=0)
+        centered = ca_positions - center
+        pca = PCA(n_components=3)
+        pca.fit(centered)
+        normal = pca.components_[2]  # Normal is the smallest variance component
+        
+        # Project points to plane and fit rectangle
+        # Create coordinate system on plane
+        if abs(normal[0]) < 0.9:
+            u = np.cross(normal, [1, 0, 0])
+        else:
+            u = np.cross(normal, [0, 1, 0])
+        u = u / np.linalg.norm(u)
+        v = np.cross(normal, u)
+        v = v / np.linalg.norm(v)
+        
+        # Project to 2D
+        points_2d = []
+        for pos in ca_positions:
+            p = pos - center
+            x = np.dot(p, u)
+            y = np.dot(p, v)
+            points_2d.append([x, y])
+        points_2d = np.array(points_2d)
+        
+        # Find minimum area rectangle
+        try:
+            hull = ConvexHull(points_2d)
+            hull_points = points_2d[hull.vertices]
+        except:
+            hull_points = points_2d
+        
+        min_area = float('inf')
+        best_rect = None
+        
+        for i in range(len(hull_points)):
+            edge = hull_points[(i + 1) % len(hull_points)] - hull_points[i]
+            angle = np.arctan2(edge[1], edge[0])
+            
+            # Rotate points
+            cos_a, sin_a = np.cos(-angle), np.sin(-angle)
+            rot_matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+            rotated = np.dot(points_2d, rot_matrix.T)
+            
+            # Bounding box
+            min_x, min_y = rotated.min(axis=0)
+            max_x, max_y = rotated.max(axis=0)
+            width = max_x - min_x
+            height = max_y - min_y
+            area = width * height
+            
+            if area < min_area:
+                min_area = area
+                
+                # Rectangle corners in 2D
+                corners_2d = np.array([
+                    [min_x, min_y],
+                    [max_x, min_y],
+                    [max_x, max_y],
+                    [min_x, max_y]
+                ])
+                
+                # Rotate back
+                inv_rot = np.array([[cos_a, sin_a], [-sin_a, cos_a]])
+                corners_2d = np.dot(corners_2d, inv_rot.T)
+                
+                # Convert to 3D
+                corners_3d = []
+                for c2d in corners_2d:
+                    c3d = center + c2d[0] * u + c2d[1] * v
+                    corners_3d.append(c3d)
+                
+                best_rect = {
+                    'corners': np.array(corners_3d),
+                    'width': width,
+                    'height': height,
+                    'area': area,
+                    'long_edge_length': max(width, height),
+                    'short_edge_length': min(width, height),
+                    'normal': normal,
+                    'center': center,
+                    'u_axis': u,
+                    'v_axis': v
+                }
+        
+        if best_rect:
+            # Identify which edges are long and short
+            corners = best_rect['corners']
+            edge_vectors = [
+                corners[1] - corners[0],
+                corners[2] - corners[1],
+                corners[3] - corners[2],
+                corners[0] - corners[3]
+            ]
+            edge_lengths = [np.linalg.norm(v) for v in edge_vectors]
+            
+            # Find long and short edges
+            if edge_lengths[0] > edge_lengths[1]:
+                # Edges 0-1 and 2-3 are long
+                best_rect['long_edge_indices'] = [(0, 1), (2, 3)]
+                best_rect['short_edge_indices'] = [(1, 2), (3, 0)]
+                best_rect['long_edge_direction'] = edge_vectors[0] / edge_lengths[0]
+                best_rect['short_edge_direction'] = edge_vectors[1] / edge_lengths[1]
+            else:
+                # Edges 1-2 and 3-0 are long
+                best_rect['long_edge_indices'] = [(1, 2), (3, 0)]
+                best_rect['short_edge_indices'] = [(0, 1), (2, 3)]
+                best_rect['long_edge_direction'] = edge_vectors[1] / edge_lengths[1]
+                best_rect['short_edge_direction'] = edge_vectors[0] / edge_lengths[0]
+            
+            return {
+                'residues': sheet_residues,
+                'num_residues': len(sheet_residues),
+                'rectangle': best_rect,
+                'area': area
+            }
+        
+        return None
+    
+    def calculate_deterministic_position(self, n_subunits: int) -> Dict[str, float]:
         """
-        Find the largest rectangular region of beta-strand residues.
+        Calculate the deterministic position for beta-sheet edge-to-edge connection.
         
         Parameters:
-            beta_residues (list): List of beta-strand residue information
+            n_subunits (int): Number of subunits in the target ring
             
         Returns:
-            Dict: Beta-sheet region information
+            Dict with positioning parameters
         """
-        if len(beta_residues) < 3:
-            return self._fallback_beta_sheet_detection()
+        if not self.has_beta_sheet:
+            # Fallback for no beta-sheet
+            return {
+                'use_deterministic': False,
+                'separation_distance': 20.0,  # Default
+                'rotation_angle': 360.0 / n_subunits
+            }
         
-        # Get CA positions of beta residues (only xy coordinates)
-        beta_positions = np.array([r['pos'][:2] for r in beta_residues])
+        rect = self.beta_sheet_info['rectangle']
         
-        # Use PCA to find the main directions of the beta-sheet
-        pca = PCA(n_components=2)
-        pca.fit(beta_positions)
+        # The separation should be along the short edge direction
+        # Distance should be approximately the protein diameter
+        protein_diameter = self._estimate_protein_diameter()
         
-        # Transform positions to PCA coordinate system
-        transformed_positions = pca.transform(beta_positions)
-        
-        # Find the largest rectangular region in PCA space
-        # This represents the main beta-sheet area
-        x_min, x_max = transformed_positions[:, 0].min(), transformed_positions[:, 0].max()
-        y_min, y_max = transformed_positions[:, 1].min(), transformed_positions[:, 1].max()
-        
-        # Define the rectangle boundaries (use 80% of the range to avoid outliers)
-        x_range = x_max - x_min
-        y_range = y_max - y_min
-        
-        x_center = (x_min + x_max) / 2
-        y_center = (y_min + y_max) / 2
-        
-        x_bounds = [x_center - 0.4 * x_range, x_center + 0.4 * x_range]
-        y_bounds = [y_center - 0.4 * y_range, y_center + 0.4 * y_range]
-        
-        # Find residues within this rectangle
-        sheet_residues = []
-        for i, (x, y) in enumerate(transformed_positions):
-            if x_bounds[0] <= x <= x_bounds[1] and y_bounds[0] <= y <= y_bounds[1]:
-                sheet_residues.append(beta_residues[i])
-        
-        if len(sheet_residues) < 3:
-            sheet_residues = beta_residues  # Use all beta residues if rectangle is too small
-        
-        # The sheet direction is the first principal component (longest axis)
-        sheet_direction_3d = pca.components_[0]
-        
-        # Project to xy-plane
-        sheet_direction_xy = sheet_direction_3d / np.linalg.norm(sheet_direction_3d)
-        
-        # Determine edge direction (perpendicular to sheet direction for edge-to-edge contact)
-        edge_direction = np.array([-sheet_direction_xy[1], sheet_direction_xy[0]])
-        edge_direction = edge_direction / np.linalg.norm(edge_direction)
+        # The rotation angle for circular assembly
+        rotation_angle = 360.0 / n_subunits
         
         return {
-            'residues': sheet_residues,
-            'direction': edge_direction,  # Direction perpendicular to beta-sheet (for edge contact)
-            'sheet_direction': sheet_direction_xy,  # Direction along beta-sheet
-            'center': np.mean([r['pos'][:2] for r in sheet_residues], axis=0)
+            'use_deterministic': True,
+            'separation_distance': protein_diameter,
+            'rotation_angle': rotation_angle,
+            'short_edge_direction': rect['short_edge_direction'],
+            'long_edge_direction': rect['long_edge_direction'],
+            'sheet_normal': rect['normal'],
+            'sheet_center': rect['center']
         }
     
-    def _fallback_beta_sheet_detection(self) -> Dict:
+    def _estimate_protein_diameter(self) -> float:
+        """Estimate protein diameter from all atoms."""
+        positions = self.monomer_atoms.positions
+        # Use convex hull for better estimate
+        try:
+            hull = ConvexHull(positions[:, :2])  # xy projection
+            hull_points = positions[hull.vertices, :2]
+            # Maximum distance between hull points
+            max_dist = 0
+            for i in range(len(hull_points)):
+                for j in range(i+1, len(hull_points)):
+                    dist = np.linalg.norm(hull_points[i] - hull_points[j])
+                    max_dist = max(max_dist, dist)
+            return max_dist
+        except:
+            # Fallback to simple range
+            x_range = positions[:, 0].max() - positions[:, 0].min()
+            y_range = positions[:, 1].max() - positions[:, 1].min()
+            return max(x_range, y_range)
+    
+    def build_dimer_deterministic(self,
+                                 n_subunits: int = 12,
+                                 separation_adjustment: float = 0.0,
+                                 angle_adjustment: float = 0.0,
+                                 output_pdb: Optional[str] = None) -> str:
         """
-        Fallback method: use CA atom distribution.
+        Build dimer using deterministic beta-sheet positioning.
         
+        Parameters:
+            n_subunits (int): Target number of subunits for ring
+            separation_adjustment (float): Adjustment to separation distance (Å)
+            angle_adjustment (float): Adjustment to rotation angle (degrees)
+            output_pdb (str): Output PDB filename
+            
         Returns:
-            Dict: Beta-sheet information
+            str: Path to dimer PDB file
         """
-        # Get CA atoms
-        ca_atoms = self.monomer_atoms.select_atoms('name CA')
-        ca_positions = ca_atoms.positions[:, :2]  # Only xy coordinates
+        if not self.has_beta_sheet:
+            raise ValueError("Deterministic positioning requires beta-sheet detection")
         
-        # PCA on CA positions
-        pca = PCA(n_components=2)
-        pca.fit(ca_positions)
+        # Get deterministic parameters
+        det_params = self.calculate_deterministic_position(n_subunits)
         
-        # Use second principal axis as potential sheet direction
-        sheet_direction = pca.components_[1]
-        edge_direction = np.array([-sheet_direction[1], sheet_direction[0]])
-        edge_direction = edge_direction / np.linalg.norm(edge_direction)
+        # Create two copies of the monomer
+        monomer1 = self.monomer_universe.copy()
+        monomer2 = self.monomer_universe.copy()
         
-        print(f"Fallback edge direction: [{edge_direction[0]:.3f}, {edge_direction[1]:.3f}]")
+        protein1 = monomer1.select_atoms('protein')
+        protein2 = monomer2.select_atoms('protein')
         
-        return {
-            'residues': [],
-            'direction': edge_direction,
-            'sheet_direction': sheet_direction,
-            'center': np.mean(ca_positions, axis=0)
-        }
+        # Position using deterministic approach
+        rect = self.beta_sheet_info['rectangle']
+        
+        # Step 1: Orient protein1 with beta-sheet in standard position
+        # Center at origin
+        center1 = protein1.center_of_mass()
+        protein1.translate(-center1)
+        
+        # We want the long edge along x-axis and short edge along y-axis
+        # This is already roughly the case if the protein was pre-aligned
+        
+        # Step 2: Position protein2
+        # First, copy protein1's position
+        center2 = protein2.center_of_mass()
+        protein2.translate(-center2)
+        
+        # Move along the short edge direction (y-axis if properly oriented)
+        separation = det_params['separation_distance'] + separation_adjustment
+        protein2.translate([0, separation, 0])
+        
+        # Rotate for circular assembly
+        # The rotation should be around the connection axis (x-axis for long edge connection)
+        angle = det_params['rotation_angle'] + angle_adjustment
+        
+        # Apply half angle to each protein for symmetry
+        protein1 = rotate.rotateby(angle=-angle/2, direction=[1, 0, 0], ag=protein1)(protein1)
+        protein2 = rotate.rotateby(angle=angle/2, direction=[1, 0, 0], ag=protein2)(protein2)
+        
+        # Also rotate protein2 by 180° around z-axis so opposite long edges face each other
+        protein2 = rotate.rotateby(angle=180, direction=[0, 0, 1], ag=protein2)(protein2)
+        
+        # Merge the two monomers
+        dimer = mda.Merge(protein1, protein2)
+        
+        # Update segment IDs
+        dimer.segments[0].segid = 'A'
+        dimer.segments[1].segid = 'B'
+        
+        # Write dimer to file
+        if output_pdb is None:
+            temp_fd, output_pdb = tempfile.mkstemp(suffix='.pdb', prefix='dimer_')
+            os.close(temp_fd)
+        
+        dimer.select_atoms('all').write(output_pdb)
+        
+        return output_pdb
     
     def build_dimer(self, 
                    separation_distance: float,
@@ -201,51 +408,46 @@ class DimerBuilder:
                    z_rotation_2: float = 0.0,
                    x_rotation_2: float = 0.0,
                    y_rotation_2: float = 0.0,
+                   n_subunits: int = 12,
                    output_pdb: Optional[str] = None) -> str:
         """
-        Build a dimer with specified geometry parameters using asymmetric rotations.
+        Build a dimer with specified rotations and separation.
+        This is the original method for compatibility with the optimizer.
         
-        This positions monomers edge-to-edge based on detected beta-sheet regions,
-        allowing different rotations for each monomer to explore more binding poses.
-        
-        Parameters:
-            separation_distance (float): Distance between beta-sheet edges (Angstroms)
-            z_rotation_1 (float): Z-rotation for monomer 1 (degrees)
-            x_rotation_1 (float): X-rotation for monomer 1 (degrees)  
-            y_rotation_1 (float): Y-rotation for monomer 1 (degrees)
-            z_rotation_2 (float): Z-rotation for monomer 2 (degrees)
-            x_rotation_2 (float): X-rotation for monomer 2 (degrees)
-            y_rotation_2 (float): Y-rotation for monomer 2 (degrees)
-            output_pdb (str, optional): Output PDB filename
-            
-        Returns:
-            str: Path to dimer PDB file
+        For beta-sheet proteins, consider using build_dimer_deterministic instead.
         """
         # Create two copies of the monomer
         monomer1 = self.monomer_universe.copy()
         monomer2 = self.monomer_universe.copy()
         
-        # Get protein atoms
         protein1 = monomer1.select_atoms('protein')
         protein2 = monomer2.select_atoms('protein')
         
-        # Apply different rotations to each monomer
+        # Apply individual rotations
         protein1 = self._apply_rotations(protein1, z_rotation_1, x_rotation_1, y_rotation_1)
         protein2 = self._apply_rotations(protein2, z_rotation_2, x_rotation_2, y_rotation_2)
         
-        # Position monomers edge-to-edge based on beta-sheet detection
-        self._position_edge_to_edge(protein1, protein2, separation_distance)
+        # Position proteins
+        if self.has_beta_sheet:
+            # Use beta-sheet aware positioning
+            protein1, protein2 = self._position_with_beta_sheets(
+                protein1, protein2, separation_distance, n_subunits
+            )
+        else:
+            # Fallback to geometric positioning
+            protein1, protein2 = self._position_geometric(
+                protein1, protein2, separation_distance, n_subunits
+            )
         
         # Merge the two monomers
         dimer = mda.Merge(protein1, protein2)
         
-        # Update segment IDs to distinguish monomers
+        # Update segment IDs
         dimer.segments[0].segid = 'A'
         dimer.segments[1].segid = 'B'
         
         # Write dimer to file
         if output_pdb is None:
-            # Create temporary file
             temp_fd, output_pdb = tempfile.mkstemp(suffix='.pdb', prefix='dimer_')
             os.close(temp_fd)
         
@@ -256,68 +458,62 @@ class DimerBuilder:
     def _apply_rotations(self, protein_atoms, z_rot: float, x_rot: float, y_rot: float):
         """Apply rotations to protein atoms."""
         if z_rot != 0.0:
-            protein_atoms = rotate.rotateby(
-                angle=z_rot, direction=[0, 0, 1], ag=protein_atoms
-            )(protein_atoms)
-        
+            protein_atoms = rotate.rotateby(angle=z_rot, direction=[0, 0, 1], ag=protein_atoms)(protein_atoms)
         if x_rot != 0.0:
-            protein_atoms = rotate.rotateby(
-                angle=x_rot, direction=[1, 0, 0], ag=protein_atoms
-            )(protein_atoms)
-        
+            protein_atoms = rotate.rotateby(angle=x_rot, direction=[1, 0, 0], ag=protein_atoms)(protein_atoms)
         if y_rot != 0.0:
-            protein_atoms = rotate.rotateby(
-                angle=y_rot, direction=[0, 1, 0], ag=protein_atoms
-            )(protein_atoms)
-        
+            protein_atoms = rotate.rotateby(angle=y_rot, direction=[0, 1, 0], ag=protein_atoms)(protein_atoms)
         return protein_atoms
     
-    def _position_edge_to_edge(self, protein1, protein2, separation_distance: float):
-        """
-        Position two proteins edge-to-edge based on detected beta-sheet regions.
-        """
-        edge_direction = self.beta_sheet_info['direction']
+    def _position_with_beta_sheets(self, protein1, protein2, separation_distance: float, n_subunits: int):
+        """Position proteins using detected beta-sheet information."""
+        # Center both proteins
+        center1 = protein1.center_of_mass()
+        protein1.translate(-center1)
         
-        # Get backbone atoms for positioning
-        backbone1 = protein1.select_atoms('backbone')
-        backbone2 = protein2.select_atoms('backbone')
+        center2 = protein2.center_of_mass()
+        protein2.translate(-center2)
         
-        # Project positions onto edge direction
-        pos1 = backbone1.positions[:, :2]  # xy only
-        pos2 = backbone2.positions[:, :2]
+        # Rotate protein2 by 180° so opposite edges face
+        protein2 = rotate.rotateby(angle=180, direction=[0, 0, 1], ag=protein2)(protein2)
         
-        proj1 = np.dot(pos1, edge_direction)
-        proj2 = np.dot(pos2, edge_direction)
+        # Separate along y-axis (short edge direction)
+        protein2.translate([0, separation_distance, 0])
         
-        # Position protein1 so its "far" edge is at -separation_distance/2
-        far_edge_1 = proj1.max()
-        target_pos_1 = -separation_distance/2
-        translation_1 = np.append((target_pos_1 - far_edge_1) * edge_direction, 0)
-        protein1.translate(translation_1)
+        # Add wedge angle for circular assembly
+        angle_between_subunits = 360.0 / n_subunits
+        protein1 = rotate.rotateby(angle=-angle_between_subunits/2, direction=[1, 0, 0], ag=protein1)(protein1)
+        protein2 = rotate.rotateby(angle=angle_between_subunits/2, direction=[1, 0, 0], ag=protein2)(protein2)
         
-        # Position protein2 so its "near" edge is at +separation_distance/2  
-        near_edge_2 = proj2.min()
-        target_pos_2 = separation_distance/2
-        translation_2 = np.append((target_pos_2 - near_edge_2) * edge_direction, 0)
-        protein2.translate(translation_2)
+        return protein1, protein2
+    
+    def _position_geometric(self, protein1, protein2, separation_distance: float, n_subunits: int):
+        """Fallback geometric positioning."""
+        # Center both proteins
+        center1 = protein1.center_of_mass()
+        protein1.translate(-center1)
+        
+        center2 = protein2.center_of_mass()
+        protein2.translate(-center2)
+        
+        # Rotate protein2 by 180°
+        protein2 = rotate.rotateby(angle=180, direction=[0, 0, 1], ag=protein2)(protein2)
+        
+        # Separate along x-axis
+        protein2.translate([separation_distance, 0, 0])
+        
+        # Add wedge angle
+        angle_between_subunits = 360.0 / n_subunits
+        protein1 = rotate.rotateby(angle=-angle_between_subunits/2, direction=[0, 1, 0], ag=protein1)(protein1)
+        protein2 = rotate.rotateby(angle=angle_between_subunits/2, direction=[0, 1, 0], ag=protein2)(protein2)
+        
+        return protein1, protein2
     
     def score_dimer(self, dimer_pdb: str) -> Dict[str, float]:
-        """
-        Score a dimer using PyRosetta.
-        
-        Parameters:
-            dimer_pdb (str): Path to dimer PDB file
-            
-        Returns:
-            Dict[str, float]: Dictionary with score components and total score
-        """
-        # Load structure into PyRosetta
+        """Score a dimer using PyRosetta."""
         pose = pyrosetta.pose_from_pdb(dimer_pdb)
-        
-        # Calculate total score
         total_score = self.scorefxn(pose)
         
-        # Get individual score components
         scores = {
             'total_score': total_score,
             'fa_atr': pose.energies().total_energies()[rosetta.core.scoring.fa_atr],
@@ -335,24 +531,9 @@ class DimerBuilder:
                          z_rotation_2: float = 0.0,
                          x_rotation_2: float = 0.0,
                          y_rotation_2: float = 0.0,
+                         n_subunits: int = 12,
                          cleanup: bool = True) -> Dict[str, float]:
-        """
-        Build and score a dimer with given geometry parameters.
-        
-        Parameters:
-            separation_distance (float): Distance between monomer centers
-            z_rotation_1 (float): Z-rotation for monomer 1 (degrees)
-            x_rotation_1 (float): X-rotation for monomer 1 (degrees)
-            y_rotation_1 (float): Y-rotation for monomer 1 (degrees)
-            z_rotation_2 (float): Z-rotation for monomer 2 (degrees)
-            x_rotation_2 (float): X-rotation for monomer 2 (degrees)
-            y_rotation_2 (float): Y-rotation for monomer 2 (degrees)
-            cleanup (bool): Whether to delete temporary PDB file
-            
-        Returns:
-            Dict[str, float]: Score dictionary with geometry parameters added
-        """
-        # Build dimer
+        """Build and score a dimer with given geometry parameters."""
         dimer_pdb = self.build_dimer(
             separation_distance=separation_distance,
             z_rotation_1=z_rotation_1,
@@ -360,13 +541,12 @@ class DimerBuilder:
             y_rotation_1=y_rotation_1,
             z_rotation_2=z_rotation_2,
             x_rotation_2=x_rotation_2,
-            y_rotation_2=y_rotation_2
+            y_rotation_2=y_rotation_2,
+            n_subunits=n_subunits
         )
         
-        # Score dimer
         scores = self.score_dimer(dimer_pdb)
         
-        # Add geometry parameters to results
         scores.update({
             'separation_distance': separation_distance,
             'z_rotation_1': z_rotation_1,
@@ -374,129 +554,114 @@ class DimerBuilder:
             'y_rotation_1': y_rotation_1,
             'z_rotation_2': z_rotation_2,
             'x_rotation_2': x_rotation_2,
-            'y_rotation_2': y_rotation_2
+            'y_rotation_2': y_rotation_2,
+            'n_subunits': n_subunits
         })
         
-        # Cleanup temporary file
+        if cleanup and os.path.exists(dimer_pdb):
+            os.remove(dimer_pdb)
+        
+        return scores
+    
+    def evaluate_deterministic(self,
+                             n_subunits: int = 12,
+                             separation_adjustment: float = 0.0,
+                             angle_adjustment: float = 0.0,
+                             cleanup: bool = True) -> Dict[str, float]:
+        """
+        Evaluate the deterministic positioning with small adjustments.
+        
+        Parameters:
+            n_subunits (int): Target number of subunits
+            separation_adjustment (float): Adjustment to calculated separation (Å)
+            angle_adjustment (float): Adjustment to calculated angle (degrees)
+            cleanup (bool): Whether to delete temporary files
+            
+        Returns:
+            Dict with scores and parameters
+        """
+        if not self.has_beta_sheet:
+            raise ValueError("Deterministic evaluation requires beta-sheet detection")
+        
+        # Build dimer
+        dimer_pdb = self.build_dimer_deterministic(
+            n_subunits=n_subunits,
+            separation_adjustment=separation_adjustment,
+            angle_adjustment=angle_adjustment
+        )
+        
+        # Score it
+        scores = self.score_dimer(dimer_pdb)
+        
+        # Add parameters
+        det_params = self.calculate_deterministic_position(n_subunits)
+        scores.update({
+            'n_subunits': n_subunits,
+            'base_separation': det_params['separation_distance'],
+            'base_angle': det_params['rotation_angle'],
+            'separation_adjustment': separation_adjustment,
+            'angle_adjustment': angle_adjustment,
+            'final_separation': det_params['separation_distance'] + separation_adjustment,
+            'final_angle': det_params['rotation_angle'] + angle_adjustment
+        })
+        
         if cleanup and os.path.exists(dimer_pdb):
             os.remove(dimer_pdb)
         
         return scores
     
     def calculate_ring_radius(self, separation_distance: float, n_subunits: int) -> float:
-        """
-        Calculate the radius of a circular ring given the dimer separation distance.
-        
-        For a regular polygon, the radius is related to the side length by:
-        R = (side_length / 2) / sin(π/n)
-        
-        Parameters:
-            separation_distance (float): Optimal separation distance from dimer
-            n_subunits (int): Number of subunits in the final ring
-            
-        Returns:
-            float: Radius of the circular ring
-        """
+        """Calculate ring radius from separation distance."""
         angle_between_subunits = 2 * np.pi / n_subunits
         radius = separation_distance / (2 * np.sin(angle_between_subunits / 2))
         return radius
-    
-    def get_ring_geometry(self, 
-                         separation_distance: float, 
-                         n_subunits: int,
-                         z_rotation_1: float = 0.0,
-                         x_rotation_1: float = 0.0,
-                         y_rotation_1: float = 0.0,
-                         z_rotation_2: float = 0.0,
-                         x_rotation_2: float = 0.0,
-                         y_rotation_2: float = 0.0) -> Dict[str, float]:
-        """
-        Convert dimer geometry to ring building parameters.
-        
-        For rings, we'll use the average of the two monomer rotations as the
-        standard rotation applied to all subunits.
-        
-        Parameters:
-            separation_distance (float): Optimal separation from dimer optimization
-            n_subunits (int): Number of subunits in target ring
-            z_rotation_1, x_rotation_1, y_rotation_1: Rotations for monomer 1
-            z_rotation_2, x_rotation_2, y_rotation_2: Rotations for monomer 2
-            
-        Returns:
-            Dict[str, float]: Ring building parameters
-        """
-        radius = self.calculate_ring_radius(separation_distance, n_subunits)
-        
-        # Use average rotations for ring building
-        avg_z_rotation = (z_rotation_1 + z_rotation_2) / 2
-        avg_x_rotation = (x_rotation_1 + x_rotation_2) / 2
-        avg_y_rotation = (y_rotation_1 + y_rotation_2) / 2
-        
-        return {
-            'radius': radius,
-            'z_rotation': avg_z_rotation,
-            'x_rotation': avg_x_rotation,
-            'y_rotation': avg_y_rotation,
-            'separation_distance': separation_distance,
-            'n_subunits': n_subunits
-        }
 
 
-def test_dimer_builder(monomer_pdb: str, output_dir: str = '.'):
-    """
-    Test function to build and score a few dimers with different parameters.
+def test_deterministic_positioning(monomer_pdb: str):
+    """Test the deterministic positioning approach."""
+    print("Testing deterministic beta-sheet positioning...")
     
-    Parameters:
-        monomer_pdb (str): Path to aligned monomer PDB
-        output_dir (str): Directory for output files
-    """
-    print(f"Testing dimer builder with monomer: {monomer_pdb}")
-    
-    # Initialize builder
     builder = DimerBuilder(monomer_pdb)
     
-    # Test a few different geometries with asymmetric rotations
-    test_cases = [
-        {'separation_distance': 10.0, 'z_rotation_1': 0.0, 'z_rotation_2': 0.0},
-        {'separation_distance': 12.0, 'z_rotation_1': 0.0, 'z_rotation_2': 180.0},
-        {'separation_distance': 15.0, 'z_rotation_1': 90.0, 'z_rotation_2': 270.0},
-        {'separation_distance': 12.0, 'z_rotation_1': 0.0, 'z_rotation_2': 0.0, 'x_rotation_1': 10.0},
-    ]
+    if not builder.has_beta_sheet:
+        print("No beta-sheet detected - cannot test deterministic positioning")
+        return
     
-    print("\nTesting different dimer geometries with asymmetric rotations:")
-    print("=" * 80)
-    
-    for i, params in enumerate(test_cases):
-        print(f"\nTest {i+1}: {params}")
+    # Test for different ring sizes
+    for n_subunits in [6, 8, 10, 12]:
+        print(f"\n{n_subunits}-mer ring:")
         
-        # Build and score dimer
-        scores = builder.evaluate_geometry(**params, cleanup=False)
+        # Get deterministic parameters
+        det_params = builder.calculate_deterministic_position(n_subunits)
+        print(f"  Base separation: {det_params['separation_distance']:.1f} Å")
+        print(f"  Base angle: {det_params['rotation_angle']:.1f}°")
         
-        # Print results
-        print(f"  Total score: {scores['total_score']:.2f}")
-        print(f"  fa_atr: {scores['fa_atr']:.2f}")
-        print(f"  fa_rep: {scores['fa_rep']:.2f}")
-        print(f"  hbond_bb_sc: {scores['hbond_bb_sc']:.2f}")
+        # Test with no adjustment
+        scores = builder.evaluate_deterministic(n_subunits=n_subunits)
+        print(f"  No adjustment - Score: {scores['total_score']:.2f}")
         
-        # Calculate what this would mean for different ring sizes
-        for n_subunits in [6, 8, 10, 12]:
-            ring_params = builder.get_ring_geometry(
-                scores['separation_distance'], 
-                n_subunits,
-                scores['z_rotation_1'], scores['x_rotation_1'], scores['y_rotation_1'],
-                scores['z_rotation_2'], scores['x_rotation_2'], scores['y_rotation_2']
-            )
-            print(f"  → {n_subunits}-mer ring radius: {ring_params['radius']:.1f} Å")
+        # Test small adjustments
+        for sep_adj in [-2, 0, 2]:
+            for ang_adj in [-5, 0, 5]:
+                if sep_adj == 0 and ang_adj == 0:
+                    continue  # Already tested
+                
+                scores = builder.evaluate_deterministic(
+                    n_subunits=n_subunits,
+                    separation_adjustment=sep_adj,
+                    angle_adjustment=ang_adj
+                )
+                print(f"  Sep adj: {sep_adj:+.1f}, Ang adj: {ang_adj:+.1f} - Score: {scores['total_score']:.2f}")
 
 
-# Example usage
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Test dimer builder')
+    parser = argparse.ArgumentParser(description='Build dimers with deterministic beta-sheet positioning')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
-    parser.add_argument('--output_dir', default='.', help='Output directory')
+    parser.add_argument('--test', action='store_true', help='Run deterministic positioning test')
     
     args = parser.parse_args()
     
-    test_dimer_builder(args.monomer, args.output_dir)
+    if args.test:
+        test_deterministic_positioning(args.monomer)
