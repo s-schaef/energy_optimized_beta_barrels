@@ -5,17 +5,13 @@ import warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='Bio')
 warnings.filterwarnings('ignore', message='.*Bio.Application.*')
 
+import os
+import time
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple
-import itertools
-from ring_builder import RingBuilder
-import time
 import multiprocessing as mp
-#from functools import partial
-import os
-#import tempfile
-#import shutil
+from typing import Dict, List, Tuple
+from ring_builder import RingBuilder
 
 def evaluate_single_geometry(params_and_monomer_and_subunits):
     """
@@ -96,7 +92,7 @@ class RingOptimizer:
     Optimize ring geometry using parallel coarse-to-fine grid search.
     """
     
-    def __init__(self, monomer_pdb: str, n_subunits: int, n_processes: int = None):
+    def __init__(self, monomer_pdb: str, n_subunits: int, angle_range: tuple = None, n_processes: int = None):
         """
         Initialize optimizer with aligned monomer.
         
@@ -162,7 +158,6 @@ class RingOptimizer:
             radius_range (tuple): (min, max) radius values
             tilt_angle_range (tuple): (min, max) tilt angle values
 
-            
         Returns:
             List[Dict]: List of parameter combinations
         """
@@ -174,19 +169,13 @@ class RingOptimizer:
         tilt_angle_min, tilt_angle_max = tilt_angle_range
         tilt_angles = np.linspace(tilt_angle_min, tilt_angle_max, number_configurations)    
 
+        # Create parameter combinations
+        radius_grid, tilt_grid = np.meshgrid(radii, tilt_angles)
+        parameter_combinations = [
+            {'radius': r, 'tilt_angle': t} 
+            for r, t in zip(radius_grid.flatten(), tilt_grid.flatten())
+        ]
 
-        
-        parameter_combinations = []
-        
-        # Asymmetric search: each monomer can have different rotations
-        # Z-rotations use reduced 180° range since relative orientations repeat after 180°
-        for radius in radii:
-            for tilt_angle in tilt_angles:
-                parameter_combinations.append({
-                    'radius': radius,
-                    'tilt_angle': tilt_angle,
-                    })
-        
         return parameter_combinations
     
     def _evaluate_parameter_set_parallel(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
@@ -215,14 +204,6 @@ class RingOptimizer:
                 
                 for i, result in enumerate(result_iter):
                     results.append(result)
-                    
-                    # # Progress updates
-                    # if (i + 1) % 100 == 0 or (i + 1) == total_combinations:
-                    #     elapsed = time.time() - start_time
-                    #     avg_time = elapsed / (i + 1)
-                    #     remaining = (total_combinations - i - 1) * avg_time
-                    #     print(f"Progress: {i+1}/{total_combinations} ({(i+1)/total_combinations*100:.1f}%) - "
-                    #           f"ETA: {remaining/60:.1f} minutes")
                 
         except KeyboardInterrupt:
             print("Optimization interrupted by user")
@@ -285,7 +266,7 @@ class RingOptimizer:
     
     def optimize(self,
                  optimization_rounds: int = 2,
-                 save_results: bool = True) -> Dict:
+                 save_csv: bool = True) -> Dict:
 
         """
         Run complete coarse-to-fine optimization with asymmetric rotations.
@@ -331,7 +312,7 @@ class RingOptimizer:
             # Sort by total score (lower is better)
             results = results.sort_values('total_score').reset_index(drop=True)
         
-            if save_results:
+            if save_csv:
                 results.to_csv(f'round{round}_results.csv', index=False)
                 print(f"Results saved to 'round{round}_results.csv'")
         
@@ -375,17 +356,19 @@ def main():
     parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly using parallel asymmetric rotations')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
     parser.add_argument('--n_subunits', type=int, required=True, help='Number of subunits in the ring')
+    parser.add_argument('--angle_range', type=float, nargs=2, default=[-30, 30],
+                        help='Range of tilt angles for the beta-sheet in degrees (default: -30 to 30)')
     parser.add_argument('--processes', type=int, help='Number of processes to use (default: all available cores)')
-    parser.add_argument('--no_save', action='store_true', help='Do not save results to CSV files')
+    parser.add_argument('--no_csv', action='store_true', help='Do not save results to CSV files')
     parser.add_argument('--rounds', type=int, default=2, help='Number of optimization rounds (default: 2)')
     
     args = parser.parse_args()
     
     # Run optimization
-    optimizer = RingOptimizer(args.monomer, args.n_subunits, n_processes=args.processes)
+    optimizer = RingOptimizer(args.monomer, args.n_subunits, args.angle_range, n_processes=args.processes)
     results = optimizer.optimize(
         optimization_rounds=args.rounds,  # Number of optimization rounds
-        save_results=not args.no_save
+        save_csv=not args.no_csv  # Save results to CSV unless --no_csv is specified
     )
     
     return results
