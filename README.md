@@ -16,7 +16,6 @@ A computational tool for building and optimizing circular protein assemblies fro
 ### Prerequisites
 
 - Miniconda or Anaconda
-- PyRosetta license (free for academic use at https://www.pyrosetta.org/downloads)
 
 ### Step 1: Create Conda Environment
 
