@@ -16,7 +16,6 @@ warnings.filterwarnings('ignore', message='.*Reader has no dt information.*')
 warnings.filterwarnings('ignore', message='.*Using default value of.*')
 
 
-
 class RingBuilder:
     """
     Build circular protein assemblies from aligned monomer structures.
@@ -45,10 +44,7 @@ class RingBuilder:
         
         if len(self.monomer_atoms) == 0:
             raise ValueError(f"No protein atoms found in {monomer_pdb}")
-        
-        self.gasdermin = gasdermin  # Flag for gasdermin-specific modifications
-        if self.gasdermin:
-            print("Gasdermin-specific modifications enabled: applying additional y-rotation adjustments")
+
         self.ring = None
         self.scorefxn = None
         self.output_pdb = None
@@ -183,16 +179,24 @@ class RingBuilder:
             self._initialize_pyrosetta()
         
         # Create a unique temporary file for this specific scoring operation
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.pdb', delete=False) as tmp:
-            temp_pdb_path = tmp.name
+        # if no output name is specified write a tempfile and score that
+        temporary = False
+        if not self.output_pdb:
+            temporary = True
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.pdb', delete=False) as tmp:
+                temp_pdb_path = tmp.name
+
+            self.output_pdb = temp_pdb_path
+
         
         try:
             # Write ring to the temporary file
-            self.write_ring_pdb(temp_pdb_path, centered=True)
-            
+            self.write_ring_pdb(self.output_pdb, centered=True)
+
             # Create a PyRosetta pose from the ring
-            pose = pyrosetta.pose_from_pdb(temp_pdb_path)
+            pose = pyrosetta.pose_from_pdb(self.output_pdb)
+
             
             # Get total score
             total_score = self.scorefxn(pose)
@@ -211,7 +215,7 @@ class RingBuilder:
             
         finally:
             # Clean up temporary file
-            if os.path.exists(temp_pdb_path):
+            if temporary and os.path.exists(temp_pdb_path):
                 os.remove(temp_pdb_path)
 
     def get_ring_info(self):
@@ -240,6 +244,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Build a circular protein assembly from an aligned monomer PDB file.')
     parser.add_argument('--input', required=True, help='Monomeric input PDB file')
     parser.add_argument('--output', required=True, help='Circular output PDB file')
+    parser.add_argument('--radius', type=float, default=120.0, help='Radius of the circular assembly in Angstroms (default: 120.0)')
+    parser.add_argument('--tilt_angle', type=float, default=-16.0, help='Tilt angle of the subunit in degrees (default: -16.0)')
     parser.add_argument('--n_subunits', type=int, default=30, help='Number of subunits in the ring (default: 30)')
     parser.add_argument('--score', action='store_true', help='Score the assembly with PyRosetta')
     parser.add_argument('--gasdermin', action='store_true', help='Enable gasdermin-specific modifications')
@@ -249,19 +255,27 @@ if __name__ == "__main__":
     try:
         # Initialize the ring builder
         ring_builder = RingBuilder(args.input)
+        if args.output:
+            ring_builder.output_pdb = args.output
+
+        # Enable gasdermin-specific modifications if requested        print(gasdermin)
+        if args.gasdermin:
+            ring_builder.gasdermin = True
+            print("Gasdermin-specific modifications enabled: applying additional y-rotation adjustments")
         
         # Build the ring
         ring_builder.build_ring(args.n_subunits, args.radius, args.tilt_angle)
-        
-        # Write the result
-        if not args.output == None:
-            ring_builder.write_ring_pdb(args.output)
-            ring_builder.output_pdb = args.output
-        
-        # Score if requested
+
+        # Score if requested (this will also write output pdb)
         if args.score:
             score = ring_builder.score_ring()
-            print(f"Final energy: {score:.2f}")
+            print(f"Final score: {score['total_score']:.2f}")
+        else: # if no scoring is requested, just write the output pdb if requested 
+            # Write the result
+            if not args.output == None:
+                ring_builder.write_ring_pdb(args.output)
+                ring_builder.output_pdb = args.output
+
             
         # Print ring information
         info = ring_builder.get_ring_info()

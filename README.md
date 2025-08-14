@@ -74,16 +74,20 @@ This will:
 Create a circular assembly with specified parameters:
 
 ```bash
-# Basic ring with 30 subunits
+# Basic ring with 30 subunits and a default radius of 120A and default tilt angle of -16 degrees
 python ring_builder.py --input monomer_aligned.pdb --output ring_30mer.pdb --n_subunits 30
 
 # Ring with custom parameters and scoring
 python ring_builder.py --input monomer_aligned.pdb --output ring_custom.pdb \
-    --n_subunits 24 --radius 85.0 --tilt_angle 15.0 --score
+    --n_subunits 24 --radius 85.0 --tilt_angle -16.0 --score
+```
 
+Empirically, gasdermin assemblies benefit from an additional 10 deg. rotation around the y-axis that results in beta-barrels that are slightly narrower towards the bottom. The --gasdermin flag enables this. 
+
+```bash
 # For gasdermin proteins
-python ring_builder.py --input gasdermin_aligned.pdb --output gasdermin_ring.pdb \
-    --n_subunits 30 --gasdermin --score
+python ring_builder.py --input monomer_aligned.pdb --output ring_custom.pdb \
+    --n_subunits 33 --radius 120.0 --tilt_angle -16.0 --score --gasdermin
 ```
 
 ### 3. Optimize Ring Geometry (`optimization_module.py`)
