@@ -72,7 +72,7 @@ python alignment_module.py --input monomer.pdb --output monomer_aligned.pdb
 This will:
 - Detect beta-sheets (if present)
 - Align the largest beta-sheet or protein principal axis with the z-axis
-- Center the structure at the origin
+- Center the beta-sheet (if not present the center of mass) of the structure at the origin
 
 ### 2. Build a Ring (`ring_builder.py`)
 
