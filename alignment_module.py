@@ -7,6 +7,11 @@ import MDAnalysis as mda
 from MDAnalysis.analysis.dssp import DSSP
 from sklearn.decomposition import PCA
 
+# suppress irrelevant MDAnalysis warnings
+warnings.filterwarnings('ignore', message='.*CRYST1 record.*')
+warnings.filterwarnings('ignore', message='.*Reader has no dt information.*')
+warnings.filterwarnings('ignore', message='.*Using default value of.*')
+
 def are_strands_connected(universe, strand1, strand2, distance_cutoff=3.5, min_hbonds=2):
         """
         Check if two beta strands are connected by hydrogen bonds.
@@ -218,7 +223,7 @@ class MonomerAligner:
         Align monomer to standard orientation:
         1. Centers protein at origin (0,0,0)
         2. Align principal axis with z-axis
-        3. Align second principal axis with x-axis
+        3. Align second principal axis with y-axis
         
         Parameters:
             output_file (str, optional): If provided, write aligned structure to this file
@@ -337,10 +342,12 @@ def align_monomer_from_file(input_pdb, output_pdb=None):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='Align monomer to standard orientation\
-                                     (1st principal axis with z-axis,\
-                                      2nd principal axis with x-axis,\
-                                      centered at origin)')
+    parser = argparse.ArgumentParser(description='Aligns monomer to standard orientation:'\
+                                     'Searches for largest beta-sheet and aligns its \
+                                     its 1st principal axis with z-axis,\
+                                     its 2nd principal axis with y-axis,\
+                                     its center of mass at the origin). \
+                                     If no beta-sheet is found, it aligns the center of mass at the origin.')
     parser.add_argument('--input', required=True, help='Input PDB file')
     parser.add_argument('--output', help='Output PDB file (optional)')
     
