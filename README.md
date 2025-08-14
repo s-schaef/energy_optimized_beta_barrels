@@ -1,21 +1,17 @@
-# Protein Ring Assembly Builder
+# Beta-Barrel Assembly Builder
 
-A computational tool for building and optimizing circular protein assemblies from monomeric structures. This package uses PyRosetta scoring functions to optimize ring geometry through parallel grid search, with special support for beta-sheet containing proteins and gasdermin-family proteins.
+A computational tool for building and optimizing circular beta-barrel protein assemblies from monomeric structures. This package uses modified PyRosetta scoring functions to optimize ring geometry through parallel grid search, with special support for gasdermin-family proteins.
 
 ## Features
 
-- **Automatic monomer alignment**: Aligns protein monomers to a standard orientation using principal component analysis (PCA)
-- **Beta-sheet detection**: Identifies and uses beta-sheet structures for improved alignment
+- **Automatic beta-sheet alignment**: Aligns protein monomers to a standard orientation using principal component analysis (PCA)
+- **Beta-sheet detection**: Identifies and uses the largest beta-sheet for improved alignment
 - **Parallel optimization**: Uses multiprocessing for efficient parameter space exploration
 - **Flexible ring construction**: Supports rings with 2-52 subunits
 - **PyRosetta scoring**: Evaluates assemblies using atomic attraction/repulsion and hydrogen bonding terms
 - **Gasdermin-specific mode**: Special optimizations for gasdermin-family proteins
 
 ## Installation
-
-### Prerequisites
-
-- Miniconda or Anaconda
 
 ### Step 1: Create Conda Environment
 
@@ -95,16 +91,16 @@ python ring_builder.py --input gasdermin_aligned.pdb --output gasdermin_ring.pdb
 Find optimal ring parameters through parallel grid search:
 
 ```bash
-# Basic optimization
+# Basic optimization (with 2 default optimization rounds)
 python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 30
 
-# Custom optimization with specific ranges
+# Custom optimization with specific ranges and one extra optimization iteration
 python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 24 \
     --radius_range 70 90 --angle_range -20 20 --rounds 3
 
-# Gasdermin optimization with more processes
+# Gasdermin optimization
 python optimization_module.py --monomer gasdermin_aligned.pdb --n_subunits 30 \
-    --gasdermin --processes 16 --rounds 2
+    --gasdermin --processes 16
 ```
 
 ## Example Workflow
@@ -119,7 +115,7 @@ python alignment_module.py --input my_protein.pdb --output my_protein_aligned.pd
 python optimization_module.py --monomer my_protein_aligned.pdb --n_subunits 24 \
     --rounds 2 --processes 8
 
-# 3. Build the final optimized ring (using parameters from optimization output)
+# 3. _(optional and ideally not needed)_ After visual assessment of the structure, you may want to play around with user specified radius and tilt_angle values. 
 python ring_builder.py --input my_protein_aligned.pdb --output final_ring_24mer.pdb \
     --n_subunits 24 --radius 82.5 --tilt_angle 12.3 --score
 ```
@@ -135,13 +131,14 @@ python ring_builder.py --input my_protein_aligned.pdb --output final_ring_24mer.
 The optimization module explores two key parameters:
 
 - **Radius**: Distance from ring center to subunit center (Ångstroms)
-- **Tilt angle**: Rotation around x-axis for beta-sheet orientation (degrees)
+- **Tilt angle**: Beta-sheet rotation around x-axis (degrees). Beta-barrels are often tilted and don't face 'straight down'. 
 
 The scoring function evaluates:
 - `fa_atr`: Attractive forces between atoms (weight: 0.9)
 - `fa_rep`: Repulsive forces between atoms (weight: 0.02, allowing minor overlaps)
 - `hbond_sr_bb`: Short-range backbone hydrogen bonds (weight: 1.0)
 - `hbond_lr_bb`: Long-range backbone hydrogen bonds (weight: 10.0, prioritized)
+The scores are reweighted empirically to recreate some known beta-barrel structures. 
 
 ## Command-Line Options
 
@@ -166,15 +163,13 @@ The scoring function evaluates:
 - `--rounds`: Number of optimization rounds (default: 2)
 - `--processes`: Number of parallel processes (default: all cores)
 - `--no_csv`: Don't save CSV results
-- `--gasdermin`: Enable gasdermin-specific modifications
+- `--gasdermin`: Enable 10 degree rotation around the y-axis. This leads to beta-barrels that get narrower towards the bottom, as can be seen in some known gasdermin family proteins. 
 
 ## Tips for Best Results
 
 1. **Monomer preparation**: Ensure your input monomer is a clean, single-chain structure
-2. **Beta-sheet proteins**: The tool works particularly well with beta-barrel and beta-sheet proteins
-3. **Optimization rounds**: More rounds give finer results but take longer (2-3 rounds usually sufficient)
-4. **Parameter ranges**: Start with default ranges; narrow them based on initial results
-5. **Subunit number**: Common ring sizes are 6, 8, 12, 24, 30, 36 subunits
+2. **Optimization rounds**: More rounds give finer results but take longer (2-3 rounds usually sufficient)
+3. **Parameter ranges**: Start with default ranges; narrow them based on initial results
 
 ## Troubleshooting
 
@@ -188,24 +183,11 @@ The scoring function evaluates:
 
 4. **Multiprocessing errors**: Reduce the number of processes with `--processes` or use `--processes 1` for sequential execution.
 
-## Citation
-
-If you use this tool in your research, please cite:
-```
-[Your publication details here]
-```
 
 ## License
 
 [Your license here - e.g., MIT, GPL, etc.]
 
-## Contributing
-
-Contributions are welcome! Please submit issues and pull requests on GitHub.
-
-## Authors
-
-[Your name and contributors]
 
 ## Acknowledgments
 
