@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import warnings
 import numpy as np
 import MDAnalysis as mda
 import pyrosetta
@@ -8,6 +9,12 @@ from pyrosetta import rosetta
 from string import ascii_uppercase as auc
 from string import ascii_lowercase as alc
 from typing import Dict
+
+# suppress irrelevant MDAnalysis warnings
+warnings.filterwarnings('ignore', message='.*CRYST1 record.*')
+warnings.filterwarnings('ignore', message='.*Reader has no dt information.*')
+warnings.filterwarnings('ignore', message='.*Using default value of.*')
+
 
 
 class RingBuilder:
