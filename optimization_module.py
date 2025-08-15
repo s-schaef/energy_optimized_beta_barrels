@@ -394,10 +394,10 @@ class RingOptimizer:
         print(f"  Radius: {best_result['radius']:.2f}A")
         print(f"  Tilt angle: {best_result['tilt_angle']:.2f}")
         print(f"  Total score: {best_result['total_score']:.2f}")
-        print(f"  fa_atr: {best_result['fa_atr']:.2f}")
-        print(f"  fa_rep: {best_result['fa_rep']:.2f} (reweighted times 0.01, to allow minor overlap)")
+        print(f"  fa_atr: {best_result['fa_atr']:.2f} (reweighted *0.9, to allow minor overlap)")
+        print(f"  fa_rep: {best_result['fa_rep']:.2f} (reweighted *0.02, to allow minor overlap)")
         print(f"  hbond_sr_bb: {best_result['hbond_sr_bb']:.2f}")
-        print(f"  hbond_lr_bb: {best_result['hbond_lr_bb']:.2f} (reweighted times 10, for better hydrogen bond optimization)")
+        print(f"  hbond_lr_bb: {best_result['hbond_lr_bb']:.2f} (reweighted *10, for better hydrogen bond optimization)")
 
         # write final structure to pdb file
         output_pdb = f"optimized_ring_{self.base_radius:.2f}A_{self.base_tilt_angle:.2f}deg.pdb"
