@@ -69,7 +69,7 @@ This will:
 - Align the largest beta-sheet or protein principal axis with the z-axis
 - Center the beta-sheet (if not present the center of mass) of the structure at the origin
 
-### 2. Build a Ring (`ring_builder.py`)
+### 2. (if you already know the geometry) Directly build a Ring (`ring_builder.py`)
 
 Create a circular assembly with specified parameters:
 
@@ -90,7 +90,7 @@ python ring_builder.py --input monomer_aligned.pdb --output ring_custom.pdb \
     --n_subunits 33 --radius 120.0 --tilt_angle -16.0 --score --gasdermin
 ```
 
-### 3. Optimize Ring Geometry (`optimization_module.py`)
+### 3. (If you don't know the geometry) Search for the best Ring Geometry (`optimization_module.py`)
 
 Find optimal ring parameters through parallel grid search:
 
@@ -113,15 +113,15 @@ Here's a complete example for building an optimized 24-mer ring:
 
 ```bash
 # 1. Align the monomer
-python alignment_module.py --input my_protein.pdb --output my_protein_aligned.pdb
+python alignment_module.py --input monomer.pdb --output monomer_aligned.pdb
 
-# 2. Run optimization to find best parameters
-python optimization_module.py --monomer my_protein_aligned.pdb --n_subunits 24 \
+# 2. Run optimization to find best parameters 
+python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 24 \
     --rounds 2 --processes 8
 
 # 3. _(optional and ideally not needed)_ After visual assessment of the structure, you may want to play around with user specified radius and tilt_angle values. 
-python ring_builder.py --input my_protein_aligned.pdb --output final_ring_24mer.pdb \
-    --n_subunits 24 --radius 82.5 --tilt_angle 12.3 --score
+python ring_builder.py --input monomer_aligned.pdb --output final_ring_24mer.pdb \
+    --n_subunits 24 --radius 82.5 --tilt_angle -12.3 --score
 ```
 
 ## Output Files

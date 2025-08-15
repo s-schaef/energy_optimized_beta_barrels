@@ -45,6 +45,7 @@ class RingBuilder:
         if len(self.monomer_atoms) == 0:
             raise ValueError(f"No protein atoms found in {monomer_pdb}")
 
+        self.gasdermin = None
         self.ring = None
         self.scorefxn = None
         self.output_pdb = None

@@ -6,12 +6,34 @@ warnings.filterwarnings('ignore', category=DeprecationWarning, module='Bio')
 warnings.filterwarnings('ignore', message='.*Bio.Application.*')
 
 import os
+import sys
 import time
+import atexit
+import tempfile
+import argparse
 import numpy as np
 import pandas as pd
 import multiprocessing as mp
 from typing import Dict, List, Tuple
 from ring_builder import RingBuilder
+
+def suppress_worker_cleanup():
+    """
+    Suppress cleanup errors in worker processes by clearing atexit handlers
+    and redirecting stderr during process termination.
+    """
+    # Clear all atexit handlers to prevent cleanup errors
+    atexit._clear()
+    
+    # Register a minimal cleanup function that suppresses stderr
+    def silent_exit():
+        # Redirect stderr to devnull during exit to suppress any remaining errors
+        try:
+            sys.stderr = open(os.devnull, 'w')
+        except:
+            pass
+    
+    atexit.register(silent_exit)
 
 def evaluate_single_geometry(params_and_monomer_and_subunits):
     """
@@ -24,17 +46,12 @@ def evaluate_single_geometry(params_and_monomer_and_subunits):
     Returns:
         dict: Evaluation results
     """
+    suppress_worker_cleanup()
     params, monomer_pdb, n_subunits = params_and_monomer_and_subunits  # Unpack n_subunits
     
-    # Suppress all output from worker processes
-    import sys
-    import os
-    import warnings
-    import tempfile
-
     # Suppress ALL warnings including DeprecationWarnings
     warnings.filterwarnings('ignore')
-    
+
     # Redirect stdout and stderr to devnull
     old_stdout = sys.stdout
     old_stderr = sys.stderr
@@ -317,6 +334,8 @@ class RingOptimizer:
             if save_csv:
                 results.to_csv(f'round{round}_results.csv', index=False)
                 print(f"Results saved to 'round{round}_results.csv'")
+                print("-"*70)
+
         
             # Get best results and update search parameters
             best_result = results.iloc[0]  # Best result is the first row after sorting
@@ -325,16 +344,8 @@ class RingOptimizer:
             self.base_tilt_angle = results.iloc[0:2]['tilt_angle'].mean() # take average of best two results
 
             # define new search ranges based on best result
-            # if radius_range is not None:
-            #     radius_range = radius_range
-            #     print(f"Using fixed radius range: {radius_range[0]:.2f} to {radius_range[1]:.2f} Å")
-            # else:
             radius_range = (self.base_radius - radius_stepsize, self.base_radius + radius_stepsize)
 
-            # if angle_range is not None:
-            #     tilt_angle_range = angle_range
-            #     print(f"Using fixed tilt angle range: {tilt_angle_range[0]:.2f} to {tilt_angle_range[1]:.2f}°")
-            # else:
             tilt_angle_range = (self.base_tilt_angle - tilt_angle_stepsize, self.base_tilt_angle + tilt_angle_stepsize)
 
 
@@ -362,9 +373,8 @@ class RingOptimizer:
         self.builder.write_ring_pdb(output_pdb, centered=True)  
 
 def main():
-    """Main function for command-line usage."""
-    import argparse
-    
+
+    """Main function for command-line usage."""    
     parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly using parallel asymmetric rotations')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
     parser.add_argument('--n_subunits', type=int, required=True, help='Number of subunits in the ring')
@@ -397,5 +407,5 @@ def main():
     return results
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
