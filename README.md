@@ -154,10 +154,10 @@ The scores are reweighted empirically to recreate some known beta-barrel structu
 - `--input`: Input aligned monomer PDB (required)
 - `--output`: Output ring PDB file (required)
 - `--n_subunits`: Number of subunits in ring (default: 30)
-- `--radius`: Ring radius in Ångstroms (default: 50.0)
-- `--tilt_angle`: Tilt angle in degrees (default: 0.0)
+- `--radius`: Ring radius in Ångstroms (default: 120.0)
+- `--tilt_angle`: Tilt angle in degrees (default: -16.0)
 - `--score`: Calculate PyRosetta scores
-- `--gasdermin`: Enable gasdermin-specific modifications
+- `--gasdermin`: Enable 10 degree rotation around the y-axis. This leads to beta-barrels that get narrower towards the bottom, as can be seen in some known gasdermin family proteins. 
 
 ### optimization_module.py
 - `--monomer`: Aligned monomer PDB file (required)
@@ -175,22 +175,10 @@ The scores are reweighted empirically to recreate some known beta-barrel structu
 2. **Optimization rounds**: More rounds give finer results but take longer (2-3 rounds usually sufficient)
 3. **Parameter ranges**: Start with default ranges; narrow them based on initial results
 
-## Troubleshooting
-
-### Common Issues
-
-1. **"No beta strands detected"**: The tool will fall back to geometric alignment. This is normal for alpha-helical proteins.
-
-2. **High repulsion scores**: Try increasing the radius range or adjusting the tilt angle range.
-
-3. **PyRosetta initialization errors**: Ensure PyRosetta is properly licensed and installed for your Python version.
-
-4. **Multiprocessing errors**: Reduce the number of processes with `--processes` or use `--processes 1` for sequential execution.
-
 
 ## License
 
-[Your license here - e.g., MIT, GPL, etc.]
+This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
 
 
 ## Acknowledgments
