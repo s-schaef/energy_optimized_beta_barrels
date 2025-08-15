@@ -46,19 +46,20 @@ def evaluate_single_geometry(params_and_monomer_and_subunits):
     Returns:
         dict: Evaluation results
     """
+    # Suppress cleanup errors in worker process
     suppress_worker_cleanup()
+    
     params, monomer_pdb, n_subunits = params_and_monomer_and_subunits  # Unpack n_subunits
     
     # Suppress ALL warnings including DeprecationWarnings
     warnings.filterwarnings('ignore')
-
-    # Redirect stdout and stderr to devnull
+    
+    # Redirect stdout and stderr to devnull to suppress output
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     devnull = open(os.devnull, 'w')
     sys.stdout = devnull
     sys.stderr = devnull
-    
     
     try:
         # Create RingBuilder instance for this process (with suppressed output)
@@ -133,11 +134,11 @@ class RingOptimizer:
         
         # Calculate adaptive separation distance range
         self.base_radius = self._calculate_base_radius()
-        print(f"Estimated radius around: {self.base_radius:.2f} Å")
+        print(f"Estimated radius around: {self.base_radius:.2f} Ã…")
 
         # Base tilt angle for the subunit
         self.base_tilt_angle = 0.0  # Default tilt angle in degrees
-        print(f"Using base tilt angle: {self.base_tilt_angle}°")
+        print(f"Using base tilt angle: {self.base_tilt_angle}Â°")
 
     def _calculate_base_radius(self) -> float:
         """
@@ -214,14 +215,39 @@ class RingOptimizer:
         
         start_time = time.time()
         results = []
-        # Use multiprocessing Pool for parallel evaluation
+        
+        # Try to use spawn method for cleaner process separation, but fall back gracefully
+        original_start_method = mp.get_start_method()
+        use_spawn = False
+        
         try:
+            # Check if spawn is available and try to use it
+            available_methods = mp.get_all_start_methods()
+            if 'spawn' in available_methods and original_start_method != 'spawn':
+                try:
+                    mp.set_start_method('spawn', force=True)
+                    use_spawn = True
+                    print(f"Using 'spawn' method for multiprocessing (original: {original_start_method})")
+                except Exception as e:
+                    print(f"Could not set spawn method: {e}, using {original_start_method}")
+            else:
+                print(f"Using '{original_start_method}' method for multiprocessing")
+            
             with mp.Pool(processes=self.n_processes) as pool:
                 # Use imap for progress tracking
                 result_iter = pool.imap(evaluate_single_geometry, work_items)
                 
                 for i, result in enumerate(result_iter):
                     results.append(result)
+                    if (i + 1) % 10 == 0 or (i + 1) == total_combinations:
+                        progress = (i + 1) / total_combinations * 100
+                        elapsed = time.time() - start_time
+                        eta = elapsed * (total_combinations - i - 1) / (i + 1) if i > 0 else 0
+                        print(f"Progress: {i+1}/{total_combinations} ({progress:.1f}%) - ETA: {eta/60:.1f} minutes")
+                
+                # Properly close and join the pool
+                pool.close()
+                pool.join()
                 
         except KeyboardInterrupt:
             print("Optimization interrupted by user")
@@ -229,7 +255,15 @@ class RingOptimizer:
         except Exception as e:
             print(f"Error in parallel evaluation: {e}")
             print("Falling back to sequential evaluation...")
-            return self._evaluate_parameter_set_sequential(parameter_combinations) #TODO: implement sequential fallback
+            return self._evaluate_parameter_set_sequential(parameter_combinations)
+        finally:
+            # Restore original start method if we changed it
+            if use_spawn:
+                try:
+                    mp.set_start_method(original_start_method, force=True)
+                    print(f"Restored multiprocessing method to '{original_start_method}'")
+                except Exception as e:
+                    print(f"Warning: Could not restore original start method: {e}")
         
         elapsed = time.time() - start_time
         print(f"Completed {total_combinations} evaluations in {elapsed/60:.1f} minutes")
@@ -252,7 +286,7 @@ class RingOptimizer:
         start_time = time.time()
         
         for i, params in enumerate(parameter_combinations):
-            if i % 100 == 0:
+            if i % 10 == 0:
                 elapsed = time.time() - start_time
                 if i > 0:
                     avg_time = elapsed / i
@@ -261,7 +295,15 @@ class RingOptimizer:
                           f"ETA: {remaining/60:.1f} minutes")
             
             try:
+                # Build ring with current parameters
+                self.builder.build_ring(
+                    n_subunits=self.n_subunits,
+                    radius=params['radius'],
+                    tilt_angle=params['tilt_angle'],
+                )
+                
                 scores = self.builder.score_ring()
+                scores.update(params)
                 results.append(scores)
 
             except Exception as e:
@@ -276,13 +318,12 @@ class RingOptimizer:
                     'hbond_lr_bb': 0,
                     'error': str(e)
                 })
-                return failed_result
+                results.append(failed_result)
         
         elapsed = time.time() - start_time
         print(f"Completed {total_combinations} evaluations in {elapsed/60:.1f} minutes")
         
         return pd.DataFrame(results)
-    
     
     def optimize(self,
                  optimization_rounds: int = 2,
@@ -312,31 +353,30 @@ class RingOptimizer:
             # Default tilt angle range if not provided
             tilt_angle_range = (self.base_tilt_angle - 30, self.base_tilt_angle + 30)
 
-
         # Coarse search
-        for round in range(optimization_rounds):
-            print(f"Will search radius range: {radius_range[0]:.2f} to {radius_range[1]:.2f} Å")
+        for round_num in range(optimization_rounds):
+            print(f"\nRound {round_num + 1}/{optimization_rounds}")
+            print(f"Will search radius range: {radius_range[0]:.2f} to {radius_range[1]:.2f}A")
             print(f"Will search tilt angle range: {tilt_angle_range[0]:.2f} to {tilt_angle_range[1]:.2f}°")
 
             radius_stepsize = (radius_range[1] - radius_range[0]) / number_configurations 
             tilt_angle_stepsize = (tilt_angle_range[1] - tilt_angle_range[0]) / number_configurations
+            
             # Generate parameter combinations
             parameter_combinations = self._generate_parameter_grid(radius_range,
                                                                tilt_angle_range,
                                                                number_configurations)
             
-        
             # Evaluate all combinations in parallel
             results = self._evaluate_parameter_set_parallel(parameter_combinations)
             # Sort by total score (lower is better)
             results = results.sort_values('total_score').reset_index(drop=True)
         
             if save_csv:
-                results.to_csv(f'round{round}_results.csv', index=False)
-                print(f"Results saved to 'round{round}_results.csv'")
+                results.to_csv(f'round{round_num}_results.csv', index=False)
+                print(f"Results saved to 'round{round_num}_results.csv'")
                 print("-"*70)
 
-        
             # Get best results and update search parameters
             best_result = results.iloc[0]  # Best result is the first row after sorting
 
@@ -345,25 +385,20 @@ class RingOptimizer:
 
             # define new search ranges based on best result
             radius_range = (self.base_radius - radius_stepsize, self.base_radius + radius_stepsize)
-
             tilt_angle_range = (self.base_tilt_angle - tilt_angle_stepsize, self.base_tilt_angle + tilt_angle_stepsize)
-
-
 
         print("\n" + "="*70)
         print("OPTIMIZATION COMPLETE")
         print("="*70)
         print(f"Best parameters found:")
-        print(f"  Radius: {best_result['radius']:.2f} Å")
-        print(f"  Tilt angle: {best_result['tilt_angle']:.2f}°")
+        print(f"  Radius: {best_result['radius']:.2f}A")
+        print(f"  Tilt angle: {best_result['tilt_angle']:.2f}")
         print(f"  Total score: {best_result['total_score']:.2f}")
         print(f"  fa_atr: {best_result['fa_atr']:.2f}")
         print(f"  fa_rep: {best_result['fa_rep']:.2f} (reweighted times 0.01, to allow minor overlap)")
         print(f"  hbond_sr_bb: {best_result['hbond_sr_bb']:.2f}")
         print(f"  hbond_lr_bb: {best_result['hbond_lr_bb']:.2f} (reweighted times 10, for better hydrogen bond optimization)")
 
-        
-            
         # write final structure to pdb file
         output_pdb = f"optimized_ring_{self.base_radius:.2f}A_{self.base_tilt_angle:.2f}deg.pdb"
         self.builder.build_ring(
@@ -371,9 +406,10 @@ class RingOptimizer:
             radius=self.base_radius,
             tilt_angle=self.base_tilt_angle,)
         self.builder.write_ring_pdb(output_pdb, centered=True)  
+        
+        return best_result.to_dict()
 
 def main():
-
     """Main function for command-line usage."""    
     parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly using parallel asymmetric rotations')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
@@ -405,7 +441,6 @@ def main():
     )
     
     return results
-
 
 if __name__ == '__main__':
     main()
