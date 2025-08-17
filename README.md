@@ -12,6 +12,8 @@ A computational tool for building and optimizing circular beta-barrel protein as
 - **Gasdermin-specific mode**: Special optimizations for gasdermin-family proteins
 
 ## Installation
+
+### Install conda environment
 ```bash
 git clone https://github.com/s-schaef/energy_optimized_beta_barrels.git
 cd energy_optimized_beta_barrels
@@ -21,22 +23,14 @@ conda activate energy_optimized_beta_barrels
 
 
 
-### Step 3: Install PyRosetta
+### Install PyRosetta into your active environment
 
-1. Obtain PyRosetta from https://www.pyrosetta.org/downloads (requires free academic license)
-2. Download the appropriate wheel file for your system (Python 3.9)
-3. Install PyRosetta:
+PyRosetta is free for academic use under the license found here https://github.com/RosettaCommons/rosetta/blob/main/LICENSE.PyRosetta.md
 
-```bash
-# Replace with your downloaded PyRosetta wheel file
-pip install pyrosetta-2024.*.*.*.wheel
-```
-
-### Step 4: Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/protein-ring-assembly.git
-cd protein-ring-assembly
+pip install pyrosetta-installer 
+python -c 'import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()'
 ```
 
 ## Usage

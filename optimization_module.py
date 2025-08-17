@@ -134,11 +134,11 @@ class RingOptimizer:
         
         # Calculate adaptive separation distance range
         self.base_radius = self._calculate_base_radius()
-        print(f"Estimated radius around: {self.base_radius:.2f} Ã…")
+        print(f"Estimated radius around: {self.base_radius:.2f} A")
 
         # Base tilt angle for the subunit
         self.base_tilt_angle = 0.0  # Default tilt angle in degrees
-        print(f"Using base tilt angle: {self.base_tilt_angle}Â°")
+        print(f"Using base tilt angle: {self.base_tilt_angle}°")
 
     def _calculate_base_radius(self) -> float:
         """

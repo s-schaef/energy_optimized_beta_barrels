@@ -306,6 +306,9 @@ class MonomerAligner:
         if output_file:
             self.protein.write(output_file)
             print(f"Aligned monomer written to {output_file}")
+        else:
+            self.protein.write(f'aligned_{self.pdb_file}')
+            print(f"Aligned monomer written to aligned_{self.pdb_file}")
             
         return self.protein
     
@@ -343,7 +346,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Aligns monomer to standard orientation:'\
-                                     'Searches for largest beta-sheet and aligns its \
+                                     'Searches for largest beta-sheet and aligns \
                                      its 1st principal axis with z-axis,\
                                      its 2nd principal axis with y-axis,\
                                      its center of mass at the origin). \
