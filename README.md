@@ -100,14 +100,15 @@ python alignment_module.py --input monomer.pdb --output monomer_aligned.pdb
 python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 24 \
     --rounds 2 --processes 8
 
-# 3. _(optional and ideally not needed)_ After visual assessment of the structure, you may want to play around with user specified radius and tilt_angle values. 
+# 3. (optional and ideally not needed) 
+# After visual assessment of the structure, you may want to play around with user specified radius and tilt_angle values. 
 python ring_builder.py --input monomer_aligned.pdb --output final_ring_24mer.pdb \
     --n_subunits 24 --radius 82.5 --tilt_angle -12.3 --score
 ```
 
 ## Output Files
 
-- **Aligned monomer**: `*_aligned.pdb` - Monomer in standard orientation
+- **Aligned monomer**: `aligned_*.pdb` - Monomer in standard orientation
 - **Optimization results**: `round{N}_results.csv` - Scored parameter combinations for each round
 - **Final ring**: `optimized_ring_*.pdb` - Best ring assembly found
 
