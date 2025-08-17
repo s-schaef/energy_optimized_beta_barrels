@@ -37,7 +37,7 @@ python -c 'import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()'
 
 The package consists of three main modules that work together:
 
-### 1. Align Your Monomer (`alignment_module.py`)
+### 1. Align Your Monomer
 
 First, align your monomeric protein structure to a standard orientation:
 
@@ -50,7 +50,7 @@ This will:
 - Align the largest beta-sheet or protein principal axis with the z-axis
 - Center the beta-sheet (if not present the center of mass) of the structure at the origin
 
-### 2. (if you already know the geometry) Directly build a Ring (`ring_builder.py`)
+### 2. (If you already know the geometry) Directly build a Ring
 
 Create a circular assembly with specified parameters:
 
@@ -71,7 +71,7 @@ python ring_builder.py --input monomer_aligned.pdb --output ring_custom.pdb \
     --n_subunits 33 --radius 120.0 --tilt_angle -16.0 --score --gasdermin
 ```
 
-### 3. (If you don't know the geometry) Search for the best Ring Geometry (`optimization_module.py`)
+### 3. (If you don't know the geometry) Search for the best Ring Geometry
 
 Find optimal ring parameters through parallel grid search:
 
