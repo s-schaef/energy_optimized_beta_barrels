@@ -12,27 +12,14 @@ A computational tool for building and optimizing circular beta-barrel protein as
 - **Gasdermin-specific mode**: Special optimizations for gasdermin-family proteins
 
 ## Installation
-
-### Step 1: Create Conda Environment
-
 ```bash
-# Create a new conda environment with Python 3.9
-conda create -n protein-rings python=3.9
-conda activate protein-rings
+git clone https://github.com/s-schaef/energy_optimized_beta_barrels.git
+cd energy_optimized_beta_barrels
+conda env create -f environment.yml
+conda activate energy_optimized_beta_barrels
 ```
 
-### Step 2: Install Dependencies
 
-```bash
-# Install scientific computing packages
-conda install -c conda-forge numpy pandas scikit-learn
-
-# Install MDAnalysis for structure manipulation
-conda install -c conda-forge mdanalysis
-
-# Install Biopython (required by MDAnalysis DSSP module)
-conda install -c conda-forge biopython
-```
 
 ### Step 3: Install PyRosetta
 
