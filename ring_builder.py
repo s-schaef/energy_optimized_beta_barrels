@@ -203,16 +203,28 @@ class RingBuilder:
             hbond_sr_bb = self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.hbond_sr_bb)
             hbond_lr_bb = self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.hbond_lr_bb)
 
-            # Pore quality score: primarily driven by hydrogen bonding between subunits.
-            # More negative hbond_lr_bb means more inter-subunit backbone H-bonds (good).
-            # We penalize heavy clashes (fa_rep) but only when extreme.
-            # This score is what the optimizer should rank by.
+            # Pore quality score: a composite that rewards inter-subunit
+            # hydrogen bonds while still preventing atomic clashes.
+            #
+            # Components (all in Rosetta energy units, more negative = better):
+            #   hbond_lr_bb: inter-subunit backbone H-bonds (the key signal)
+            #   hbond_sr_bb: intra-subunit backbone H-bonds (structural integrity)
+            #   fa_atr:      van der Waals attraction (proper contact)
+            #   fa_rep:      van der Waals repulsion (ALWAYS positive; penalizes overlap)
+            #
+            # We weight H-bonds heavily but include fa_rep so overlapping
+            # configurations are rejected. The fa_rep weight (0.5) is much
+            # higher than in total_score (0.02) specifically to filter out
+            # clashing geometries that happen to have good H-bond counts.
             n_subunits = len(self.ring.segments)
             hbond_per_subunit = hbond_lr_bb / n_subunits if n_subunits > 0 else 0
 
-            # Pore quality: maximize H-bonds, penalize severe clashes
-            # More negative = better pore quality
-            pore_quality = (hbond_lr_bb * 10.0) + (hbond_sr_bb * 1.0) + min(fa_rep * 0.02, 0)
+            pore_quality = (
+                hbond_lr_bb * 10.0      # primary: inter-subunit H-bonds (negative = good)
+                + hbond_sr_bb * 1.0     # secondary: intra-subunit H-bonds (negative = good)
+                + fa_atr * 0.5          # reward real contact (negative = good)
+                + fa_rep * 0.5          # penalize clashes (positive = bad)
+            )
 
             score_dict = {
                 'total_score': total_score,
