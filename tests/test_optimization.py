@@ -1,14 +1,11 @@
 """Tests for optimization_module.py - geometry and parameter grid logic."""
 
 import os
-import sys
 import pytest
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from tests.make_test_pdb import make_simple_monomer_pdb
-from optimization_module import RingOptimizer
+from barrel_builder.optimization import RingOptimizer
 
 
 @pytest.fixture
@@ -89,7 +86,7 @@ class TestPoreQualityRanking:
     def test_pore_quality_in_score_dict(self, monomer_pdb):
         """RingBuilder.score_ring() must return pore_quality and hbond_per_subunit."""
         pytest.importorskip("pyrosetta")
-        from ring_builder import RingBuilder
+        from barrel_builder.ring_builder import RingBuilder
         builder = RingBuilder(monomer_pdb)
         builder.build_ring(n_subunits=4, radius=50.0)
         scores = builder.score_ring()

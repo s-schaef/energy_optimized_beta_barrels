@@ -24,6 +24,14 @@ conda env create -f environment.yml
 conda activate energy_optimized_beta_barrels
 ```
 
+### Install the package
+
+```bash
+pip install -e .
+```
+
+This registers three CLI commands (`barrel-align`, `barrel-build`, `barrel-optimize`) that work from any directory once the environment is activated.
+
 ### Install PyRosetta into your active environment
 
 PyRosetta is free for academic use under the license found here https://github.com/RosettaCommons/rosetta/blob/main/LICENSE.PyRosetta.md
@@ -35,14 +43,14 @@ python -c 'import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()'
 
 ## Usage
 
-The package consists of three main modules that work together:
+The package consists of three main modules that work together. After `pip install -e .`, use the `barrel-*` commands from anywhere:
 
 ### 1. Align Your Monomer
 
 First, align your monomeric protein structure to a standard orientation:
 
 ```bash
-python alignment_module.py --input monomer.pdb --output monomer_aligned.pdb
+barrel-align --input monomer.pdb --output monomer_aligned.pdb
 ```
 
 This will:
@@ -56,10 +64,10 @@ Create a circular assembly with specified parameters:
 
 ```bash
 # Basic ring with 30 subunits
-python ring_builder.py --input monomer_aligned.pdb --output ring_30mer.pdb --n_subunits 30
+barrel-build --input monomer_aligned.pdb --output ring_30mer.pdb --n_subunits 30
 
 # Ring with custom parameters including z-offset stagger and scoring
-python ring_builder.py --input monomer_aligned.pdb --output ring_custom.pdb \
+barrel-build --input monomer_aligned.pdb --output ring_custom.pdb \
     --n_subunits 24 --radius 85.0 --tilt_angle -16.0 --z_offset 2.5 --score
 ```
 
@@ -67,7 +75,7 @@ Empirically, gasdermin assemblies benefit from an additional 10 deg. rotation ar
 
 ```bash
 # For gasdermin proteins
-python ring_builder.py --input monomer_aligned.pdb --output ring_custom.pdb \
+barrel-build --input monomer_aligned.pdb --output ring_custom.pdb \
     --n_subunits 33 --radius 120.0 --tilt_angle -16.0 --score --gasdermin
 ```
 
@@ -77,18 +85,18 @@ Find optimal ring parameters through parallel grid search:
 
 ```bash
 # Basic optimization (3 rounds, ranked by pore quality)
-python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 30
+barrel-optimize --monomer monomer_aligned.pdb --n_subunits 30
 
 # Custom optimization with specific ranges
-python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 24 \
+barrel-optimize --monomer monomer_aligned.pdb --n_subunits 24 \
     --radius_range 70 90 --angle_range -20 20 --z_offset_range 0 4 --rounds 3
 
 # Rank by total energy instead of pore quality (not recommended)
-python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 24 \
+barrel-optimize --monomer monomer_aligned.pdb --n_subunits 24 \
     --rank_by total_score
 
 # Gasdermin optimization
-python optimization_module.py --monomer gasdermin_aligned.pdb --n_subunits 30 \
+barrel-optimize --monomer gasdermin_aligned.pdb --n_subunits 30 \
     --gasdermin --processes 16
 ```
 
@@ -98,14 +106,14 @@ Here's a complete example for building an optimized 24-mer ring:
 
 ```bash
 # 1. Align the monomer
-python alignment_module.py --input monomer.pdb --output monomer_aligned.pdb
+barrel-align --input monomer.pdb --output monomer_aligned.pdb
 
 # 2. Run optimization to find best parameters (pore quality focused)
-python optimization_module.py --monomer monomer_aligned.pdb --n_subunits 24 \
+barrel-optimize --monomer monomer_aligned.pdb --n_subunits 24 \
     --rounds 3 --processes 8
 
 # 3. (optional) Build with manually adjusted parameters after visual assessment
-python ring_builder.py --input monomer_aligned.pdb --output final_ring_24mer.pdb \
+barrel-build --input monomer_aligned.pdb --output final_ring_24mer.pdb \
     --n_subunits 24 --radius 82.5 --tilt_angle -12.3 --z_offset 2.0 --score
 ```
 
@@ -143,11 +151,11 @@ By default, results are ranked by `pore_quality` rather than `total_score`. The 
 
 ## Command-Line Options
 
-### alignment_module.py
+### `barrel-align`
 - `--input`: Input PDB file (required)
 - `--output`: Output aligned PDB file (optional)
 
-### ring_builder.py
+### `barrel-build`
 - `--input`: Input aligned monomer PDB (required)
 - `--output`: Output ring PDB file (required)
 - `--n_subunits`: Number of subunits in ring (default: 30)
@@ -157,7 +165,7 @@ By default, results are ranked by `pore_quality` rather than `total_score`. The 
 - `--score`: Calculate PyRosetta scores
 - `--gasdermin`: Enable 10 degree rotation around the y-axis
 
-### optimization_module.py
+### `barrel-optimize`
 - `--monomer`: Aligned monomer PDB file (required)
 - `--n_subunits`: Number of subunits in ring (required)
 - `--radius_range`: Min and max radius values (default: adaptive)
@@ -169,6 +177,14 @@ By default, results are ranked by `pore_quality` rather than `total_score`. The 
 - `--processes`: Number of parallel processes (default: all cores)
 - `--no_csv`: Don't save CSV results
 - `--gasdermin`: Enable gasdermin-specific y-axis rotation
+
+### Python API
+
+After installation, the package can also be used as a library:
+
+```python
+from barrel_builder import align_monomer_from_file, RingBuilder, RingOptimizer
+```
 
 ## Testing
 

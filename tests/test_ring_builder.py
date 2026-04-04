@@ -1,15 +1,11 @@
 """Tests for ring_builder.py - focus on ring geometry and pore quality."""
 
 import os
-import sys
-import tempfile
 import pytest
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from tests.make_test_pdb import make_simple_monomer_pdb, make_helix_monomer_pdb
-from ring_builder import RingBuilder
+from barrel_builder.ring_builder import RingBuilder
 
 
 @pytest.fixture

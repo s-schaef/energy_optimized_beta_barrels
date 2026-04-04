@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "barrel-builder"
+version = "0.2.0"
+description = "Build and optimize circular beta-barrel protein assemblies"
+license = "BSD-3-Clause"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "pandas",
+    "MDAnalysis",
+    "biopython",
+]
+
+[project.optional-dependencies]
+scoring = ["pyrosetta"]
+
+[project.scripts]
+barrel-align = "barrel_builder.alignment:main"
+barrel-build = "barrel_builder.ring_builder:main"
+barrel-optimize = "barrel_builder.optimization:main"

@@ -1,14 +1,11 @@
 """Tests for alignment_module.py."""
 
 import os
-import sys
 import pytest
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from tests.make_test_pdb import make_simple_monomer_pdb, make_helix_monomer_pdb
-from alignment_module import MonomerAligner, align_monomer_from_file
+from barrel_builder.alignment import MonomerAligner, align_monomer_from_file
 
 
 @pytest.fixture

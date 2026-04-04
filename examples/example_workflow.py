@@ -1,25 +1,17 @@
 #!/usr/bin/env python3
 """
-Example workflow demonstrating how to build and optimize a beta-barrel assembly.
+Example: full beta-barrel assembly workflow.
 
-This script shows the three-step process:
   1. Align a monomer to standard orientation
-  2. Optimize ring geometry with pore-quality-focused scoring
-  3. Build the final ring with the best parameters
+  2. Optimize ring geometry (pore-quality-focused scoring)
+  3. Build the final ring with best parameters
 
-Usage:
-    python examples/example_workflow.py --input monomer.pdb --n_subunits 24
+Usage (after pip install -e .):
+    python -m examples.example_workflow --input monomer.pdb --n_subunits 24
 """
 
 import argparse
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from alignment_module import align_monomer_from_file
-from optimization_module import RingOptimizer
-from ring_builder import RingBuilder
+from barrel_builder import align_monomer_from_file, RingOptimizer, RingBuilder
 
 
 def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 3,
@@ -31,7 +23,7 @@ def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 3,
     print("STEP 1: Aligning monomer")
     print("=" * 70)
     aligned_pdb = input_pdb.replace('.pdb', '_aligned.pdb')
-    aligner = align_monomer_from_file(input_pdb, aligned_pdb)
+    align_monomer_from_file(input_pdb, aligned_pdb)
     print(f"Aligned monomer saved to {aligned_pdb}\n")
 
     # Step 2: Optimize ring geometry
@@ -47,7 +39,7 @@ def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 3,
 
     best = optimizer.optimize(
         optimization_rounds=rounds,
-        rank_by='pore_quality',  # Prioritize pore quality over raw energy
+        rank_by='pore_quality',
     )
 
     print(f"\nBest geometry found:")
@@ -57,7 +49,7 @@ def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 3,
     print(f"  Pore quality:    {best['pore_quality']:.2f}")
     print(f"  H-bonds/subunit: {best.get('hbond_per_subunit', 0):.2f}")
 
-    # Step 3: Build final ring with best parameters
+    # Step 3: Build final ring
     print("\n" + "=" * 70)
     print("STEP 3: Building final ring")
     print("=" * 70)
@@ -71,15 +63,6 @@ def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 3,
     )
     builder.write_ring_pdb(final_pdb)
     print(f"\nFinal ring saved to {final_pdb}")
-
-    # Print scoring summary
-    scores = builder.score_ring()
-    print(f"\nFinal ring scores:")
-    for key, val in scores.items():
-        if isinstance(val, float):
-            print(f"  {key}: {val:.2f}")
-        else:
-            print(f"  {key}: {val}")
 
     return best
 
