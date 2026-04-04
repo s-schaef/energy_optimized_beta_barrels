@@ -17,74 +17,58 @@ import multiprocessing as mp
 from typing import Dict, List, Tuple
 from ring_builder import RingBuilder
 
+
 def suppress_worker_cleanup():
-    """
-    Suppress cleanup errors in worker processes by clearing atexit handlers
-    and redirecting stderr during process termination.
-    """
-    # Clear all atexit handlers to prevent cleanup errors
+    """Suppress cleanup errors in worker processes."""
     atexit._clear()
-    
-    # Register a minimal cleanup function that suppresses stderr
+
     def silent_exit():
-        # Redirect stderr to devnull during exit to suppress any remaining errors
         try:
             sys.stderr = open(os.devnull, 'w')
         except:
             pass
-    
+
     atexit.register(silent_exit)
 
-def evaluate_single_geometry(params_and_monomer_and_subunits):
+
+def evaluate_single_geometry(args_tuple):
     """
     Worker function to evaluate a single geometry in parallel.
     Each process creates its own RingBuilder to avoid sharing issues.
-    
+
     Parameters:
-        params_and_monomer_and_subunits (tuple): (parameters_dict, monomer_pdb_path, n_subunits)
-        
+        args_tuple (tuple): (parameters_dict, monomer_pdb_path, n_subunits, gasdermin)
+
     Returns:
-        dict: Evaluation results
+        dict: Evaluation results including pore_quality score
     """
-    # Suppress cleanup errors in worker process
     suppress_worker_cleanup()
-    
-    params, monomer_pdb, n_subunits = params_and_monomer_and_subunits  # Unpack n_subunits
-    
-    # Suppress ALL warnings including DeprecationWarnings
+
+    params, monomer_pdb, n_subunits, gasdermin = args_tuple
+
     warnings.filterwarnings('ignore')
-    
-    # Redirect stdout and stderr to devnull to suppress output
+
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     devnull = open(os.devnull, 'w')
     sys.stdout = devnull
     sys.stderr = devnull
-    
+
     try:
-        # Create RingBuilder instance for this process (with suppressed output)
-        builder = RingBuilder(monomer_pdb)
-        
-        # Use a temporary directory for this evaluation to ensure cleanup
-        with tempfile.TemporaryDirectory(prefix='ring_eval_') as temp_dir:            
-            # Build ring with specified output location
-            builder.build_ring(
-                n_subunits=n_subunits,  # Use the passed n_subunits
-                radius=params['radius'],
-                tilt_angle=params['tilt_angle'],
-            )       
-            # Score ring
-            print('scoring ring with parameters:', params)
-            scores = builder.score_ring()
-                        
-            # Add geometry parameters to results
-            scores.update(params)
-        
+        builder = RingBuilder(monomer_pdb, gasdermin=gasdermin)
+
+        builder.build_ring(
+            n_subunits=n_subunits,
+            radius=params['radius'],
+            tilt_angle=params['tilt_angle'],
+            z_offset=params.get('z_offset', 0.0),
+        )
+        scores = builder.score_ring()
+        scores.update(params)
+
         return scores
-        
+
     except Exception as e:
-        print(f"Error evaluating parameters {params}: {e}")
-        # Return failed result with high energy
         failed_result = params.copy()
         failed_result.update({
             'total_score': 999999,
@@ -92,12 +76,13 @@ def evaluate_single_geometry(params_and_monomer_and_subunits):
             'fa_rep': 999999,
             'hbond_sr_bb': 0,
             'hbond_lr_bb': 0,
+            'hbond_per_subunit': 0,
+            'pore_quality': 999999,
             'error': str(e)
         })
         return failed_result
-        
+
     finally:
-        # Restore stdout and stderr
         try:
             devnull.close()
             sys.stdout = old_stdout
@@ -105,210 +90,161 @@ def evaluate_single_geometry(params_and_monomer_and_subunits):
         except:
             pass
 
+
 class RingOptimizer:
     """
     Optimize ring geometry using parallel coarse-to-fine grid search.
+
+    The optimizer explores three parameters:
+      - radius: distance from ring center to subunit center
+      - tilt_angle: beta-sheet rotation around x-axis
+      - z_offset: alternating vertical stagger between adjacent subunits
+
+    Results are ranked by pore_quality (inter-subunit hydrogen bonding)
+    rather than raw total energy, ensuring the central beta-sheet pore
+    is well-formed.
     """
-    
-    def __init__(self, monomer_pdb: str, n_subunits: int, gasdermin: bool = False, n_processes: int = None):
+
+    def __init__(self, monomer_pdb: str, n_subunits: int,
+                 gasdermin: bool = False, n_processes: int = None):
         """
         Initialize optimizer with aligned monomer.
-        
+
         Parameters:
             monomer_pdb (str): Path to aligned monomer PDB file
-            n_processes (int): Number of processes to use. If None, uses all available cores.
+            n_subunits (int): Number of subunits in the ring
+            gasdermin (bool): Enable gasdermin-specific modifications
+            n_processes (int): Number of processes (default: all cores)
         """
-        self.monomer_pdb = os.path.abspath(monomer_pdb)  # Use absolute path for multiprocessing
+        self.monomer_pdb = os.path.abspath(monomer_pdb)
         self.n_subunits = n_subunits
-        self.gasdermin = gasdermin  # Flag for gasdermin-specific modifications
-        # Set up multiprocessing
+        self.gasdermin = gasdermin
+
         if n_processes is None:
             self.n_processes = mp.cpu_count()
         else:
             self.n_processes = min(n_processes, mp.cpu_count())
-        
-        print(f"Using {self.n_processes} processes for parallel optimization")
-        
-        # Create a single builder instance for main process calculations
-        self.builder = RingBuilder(self.monomer_pdb, self.gasdermin)  # gasdermin flag can be set here if needed
-        
-        # Calculate adaptive separation distance range
-        self.base_radius = self._calculate_base_radius()
-        print(f"Estimated radius around: {self.base_radius:.2f} A")
 
-        # Base tilt angle for the subunit
-        self.base_tilt_angle = 0.0  # Default tilt angle in degrees
-        print(f"Using base tilt angle: {self.base_tilt_angle}°")
+        print(f"Using {self.n_processes} processes for parallel optimization")
+
+        self.builder = RingBuilder(self.monomer_pdb, gasdermin=self.gasdermin)
+
+        self.base_radius = self._calculate_base_radius()
+        print(f"Estimated base radius: {self.base_radius:.2f} A")
+
+        self.base_tilt_angle = 0.0
+        self.base_z_offset = 0.0
+        print(f"Using base tilt angle: {self.base_tilt_angle} deg")
+        print(f"Using base z_offset: {self.base_z_offset} A")
 
     def _calculate_base_radius(self) -> float:
         """
-        Calculate the base radius for the ring assembly based on the number of monomers.
-        
-        Returns:
-            float: Base radius in Angstroms
+        Calculate base radius from monomer dimensions and subunit count.
+
+        Uses the y-extent of backbone atoms to estimate the width each
+        subunit occupies in the ring circumference.
         """
-        monomer_atoms = self.builder.monomer_atoms.select_atoms('backbone')
-
-        # get y-coordinates of all backbone atoms
-        y_coords = monomer_atoms.positions[:, 1]
-        # get min and max y-coordinates
-        min_y = np.min(y_coords)
-        max_y = np.max(y_coords)
-
-        # calculate the base width as the difference between max and min y-coordinates
-        monomer_width = max_y - min_y 
-
-        # calculate circumference of the ring
+        backbone = self.builder.monomer_atoms.select_atoms('backbone')
+        y_coords = backbone.positions[:, 1]
+        monomer_width = np.max(y_coords) - np.min(y_coords)
         circumference = monomer_width * self.n_subunits
+        return circumference / (2 * np.pi)
 
-        # calculate radius from circumference
-        radius = circumference / (2 * np.pi)
-
-        return radius
-    
-    def _generate_parameter_grid(self, 
+    def _generate_parameter_grid(self,
                                  radius_range: Tuple[float, float],
                                  tilt_angle_range: Tuple[float, float],
-                                 number_configurations: int) -> List[Dict]:
+                                 z_offset_range: Tuple[float, float],
+                                 grid_size: int) -> List[Dict]:
         """
-        Generate parameter combinations for grid search.
-        
+        Generate parameter combinations for 3D grid search.
+
         Parameters:
-            radius_range (tuple): (min, max) radius values
-            tilt_angle_range (tuple): (min, max) tilt angle values
+            radius_range: (min, max) radius values
+            tilt_angle_range: (min, max) tilt angle values
+            z_offset_range: (min, max) z-offset values
+            grid_size: number of points per dimension
 
         Returns:
-            List[Dict]: List of parameter combinations
+            List[Dict]: Parameter combinations
         """
-        # Generate radius points
-        radius_min, radius_max = radius_range
-        radii = np.linspace(radius_min, radius_max, number_configurations)
+        radii = np.linspace(radius_range[0], radius_range[1], grid_size)
+        tilt_angles = np.linspace(tilt_angle_range[0], tilt_angle_range[1], grid_size)
+        z_offsets = np.linspace(z_offset_range[0], z_offset_range[1], grid_size)
 
-        # Generate tilt angle points
-        tilt_angle_min, tilt_angle_max = tilt_angle_range
-        tilt_angles = np.linspace(tilt_angle_min, tilt_angle_max, number_configurations)    
-
-        # Create parameter combinations
-        radius_grid, tilt_grid = np.meshgrid(radii, tilt_angles)
-        parameter_combinations = [
-            {'radius': r, 'tilt_angle': t} 
-            for r, t in zip(radius_grid.flatten(), tilt_grid.flatten())
+        r_grid, t_grid, z_grid = np.meshgrid(radii, tilt_angles, z_offsets)
+        return [
+            {'radius': r, 'tilt_angle': t, 'z_offset': z}
+            for r, t, z in zip(r_grid.flatten(), t_grid.flatten(), z_grid.flatten())
         ]
 
-        return parameter_combinations
-    
-    def _evaluate_parameter_set_parallel(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
+    def _evaluate_parallel(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
         """
-        Evaluate a set of parameter combinations in parallel.
-        
-        Parameters:
-            parameter_combinations (list): List of parameter dictionaries
-            
+        Evaluate parameter combinations in parallel.
+
         Returns:
-            pd.DataFrame: Results with scores and parameters
+            pd.DataFrame: Results sorted by pore_quality (ascending = better)
         """
-        total_combinations = len(parameter_combinations)
-        print(f"Evaluating {total_combinations} parameter combinations using {self.n_processes} processes...")
-        
-        # Prepare input for worker processes
-        work_items = [(params, self.monomer_pdb, self.n_subunits) for params in parameter_combinations]
-        
+        total = len(parameter_combinations)
+        print(f"Evaluating {total} parameter combinations using {self.n_processes} processes...")
+
+        work_items = [
+            (params, self.monomer_pdb, self.n_subunits, self.gasdermin)
+            for params in parameter_combinations
+        ]
+
         start_time = time.time()
         results = []
-        
-        # Try to use spawn method for cleaner process separation, but fall back gracefully
-        original_start_method = mp.get_start_method()
-        use_spawn = False
-        
+
         try:
-            # Check if spawn is available and try to use it
-            available_methods = mp.get_all_start_methods()
-            if 'spawn' in available_methods and original_start_method != 'spawn':
-                try:
-                    mp.set_start_method('spawn', force=True)
-                    use_spawn = True
-                    print(f"Using 'spawn' method for multiprocessing (original: {original_start_method})")
-                except Exception as e:
-                    print(f"Could not set spawn method: {e}, using {original_start_method}")
-            else:
-                print(f"Using '{original_start_method}' method for multiprocessing")
-            
-            with mp.Pool(processes=self.n_processes) as pool:
-                # Use imap for progress tracking
+            ctx = mp.get_context('spawn')
+            with ctx.Pool(processes=self.n_processes) as pool:
                 result_iter = pool.imap(evaluate_single_geometry, work_items)
-                
+
                 for i, result in enumerate(result_iter):
                     results.append(result)
-                    if (i + 1) % 10 == 0 or (i + 1) == total_combinations:
-                        progress = (i + 1) / total_combinations * 100
+                    if (i + 1) % 10 == 0 or (i + 1) == total:
+                        progress = (i + 1) / total * 100
                         elapsed = time.time() - start_time
-                        eta = elapsed * (total_combinations - i - 1) / (i + 1) if i > 0 else 0
-                        print(f"Progress: {i+1}/{total_combinations} ({progress:.1f}%) - ETA: {eta/60:.1f} minutes")
-                
-                # Properly close and join the pool
-                pool.close()
-                pool.join()
-                
-        except KeyboardInterrupt:
-            print("Optimization interrupted by user")
-            raise
+                        eta = elapsed * (total - i - 1) / (i + 1) if i > 0 else 0
+                        print(f"Progress: {i+1}/{total} ({progress:.1f}%) - "
+                              f"ETA: {eta/60:.1f} min")
+
         except Exception as e:
-            print(f"Error in parallel evaluation: {e}")
+            print(f"Parallel evaluation failed: {e}")
             print("Falling back to sequential evaluation...")
-            return self._evaluate_parameter_set_sequential(parameter_combinations)
-        finally:
-            # Restore original start method if we changed it
-            if use_spawn:
-                try:
-                    mp.set_start_method(original_start_method, force=True)
-                    print(f"Restored multiprocessing method to '{original_start_method}'")
-                except Exception as e:
-                    print(f"Warning: Could not restore original start method: {e}")
-        
+            return self._evaluate_sequential(parameter_combinations)
+
         elapsed = time.time() - start_time
-        print(f"Completed {total_combinations} evaluations in {elapsed/60:.1f} minutes")
-        
+        print(f"Completed {total} evaluations in {elapsed/60:.1f} minutes")
+
         return pd.DataFrame(results)
-    
-    def _evaluate_parameter_set_sequential(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
-        """
-        Fallback sequential evaluation if parallel fails.
-        
-        Parameters:
-            parameter_combinations (list): List of parameter dictionaries
-            
-        Returns:
-            pd.DataFrame: Results with scores and parameters
-        """
+
+    def _evaluate_sequential(self, parameter_combinations: List[Dict]) -> pd.DataFrame:
+        """Fallback sequential evaluation."""
         print("Running sequential evaluation...")
         results = []
-        total_combinations = len(parameter_combinations)
+        total = len(parameter_combinations)
         start_time = time.time()
-        
+
         for i, params in enumerate(parameter_combinations):
-            if i % 10 == 0:
+            if (i + 1) % 10 == 0:
                 elapsed = time.time() - start_time
-                if i > 0:
-                    avg_time = elapsed / i
-                    remaining = (total_combinations - i) * avg_time
-                    print(f"Progress: {i}/{total_combinations} ({i/total_combinations*100:.1f}%) - "
-                          f"ETA: {remaining/60:.1f} minutes")
-            
+                eta = elapsed * (total - i) / (i + 1) if i > 0 else 0
+                print(f"Progress: {i+1}/{total} ({(i+1)/total*100:.1f}%) - "
+                      f"ETA: {eta/60:.1f} min")
+
             try:
-                # Build ring with current parameters
                 self.builder.build_ring(
                     n_subunits=self.n_subunits,
                     radius=params['radius'],
                     tilt_angle=params['tilt_angle'],
+                    z_offset=params.get('z_offset', 0.0),
                 )
-                
                 scores = self.builder.score_ring()
                 scores.update(params)
                 results.append(scores)
-
             except Exception as e:
-                print(f"Error evaluating parameters {params}: {e}")
-                # Return failed result with high energy
+                print(f"Error evaluating {params}: {e}")
                 failed_result = params.copy()
                 failed_result.update({
                     'total_score': 999999,
@@ -316,131 +252,182 @@ class RingOptimizer:
                     'fa_rep': 999999,
                     'hbond_sr_bb': 0,
                     'hbond_lr_bb': 0,
+                    'hbond_per_subunit': 0,
+                    'pore_quality': 999999,
                     'error': str(e)
                 })
                 results.append(failed_result)
-        
+
         elapsed = time.time() - start_time
-        print(f"Completed {total_combinations} evaluations in {elapsed/60:.1f} minutes")
-        
+        print(f"Completed {total} evaluations in {elapsed/60:.1f} minutes")
         return pd.DataFrame(results)
-    
+
     def optimize(self,
-                 optimization_rounds: int = 2,
-                 radius_range: Tuple[float, float] = (80, 100),
+                 optimization_rounds: int = 3,
+                 radius_range: Tuple[float, float] = None,
                  angle_range: Tuple[float, float] = (-30, 30),
+                 z_offset_range: Tuple[float, float] = (0, 5),
+                 grid_size: int = 8,
+                 rank_by: str = 'pore_quality',
                  save_csv: bool = True) -> Dict:
-
         """
-        Run complete coarse-to-fine optimization with asymmetric rotations.
-        
+        Run coarse-to-fine grid search optimization.
+
+        The optimizer searches over radius, tilt angle, and z-offset in
+        successive rounds. Each round narrows the search window around the
+        best result from the previous round.
+
         Parameters:
-            subunit_range (tuple): (min, max) number of subunits to optimize for
-            save_results (bool): Whether to save results to CSV files
-            
+            optimization_rounds (int): Number of refinement rounds (default: 3)
+            radius_range (tuple): (min, max) radius. If None, derived from monomer.
+            angle_range (tuple): (min, max) tilt angle in degrees
+            z_offset_range (tuple): (min, max) z-offset in Angstroms
+            grid_size (int): Points per dimension per round (default: 8)
+            rank_by (str): Score column to rank by. 'pore_quality' focuses on
+                inter-subunit H-bonds; 'total_score' uses raw energy.
+            save_csv (bool): Save per-round results to CSV
+
         Returns:
-            Dict: Optimization results with best parameters
+            Dict: Best parameters and scores found
         """
-        print("="*70)
-        
-        number_configurations = 10  # Number of configurations per parameter range
-        total_combinations = (number_configurations ** 2 * optimization_rounds)
-        print(f"Total combinations: {total_combinations} in {optimization_rounds} rounds")
+        if radius_range is None:
+            radius_range = (self.base_radius * 0.6, self.base_radius)
 
-        if angle_range is not None:
-            tilt_angle_range = angle_range
-        else:
-            # Default tilt angle range if not provided
-            tilt_angle_range = (self.base_tilt_angle - 30, self.base_tilt_angle + 30)
+        tilt_angle_range = angle_range
+        z_off_range = z_offset_range
 
-        # Coarse search
+        total_combinations = grid_size ** 3 * optimization_rounds
+        print("=" * 70)
+        print(f"Optimizing: {total_combinations} total evaluations over "
+              f"{optimization_rounds} rounds")
+        print(f"Ranking by: {rank_by}")
+        print("=" * 70)
+
+        best_result = None
+
         for round_num in range(optimization_rounds):
-            print(f"\nRound {round_num + 1}/{optimization_rounds}")
-            print(f"Will search radius range: {radius_range[0]:.2f} to {radius_range[1]:.2f}A")
-            print(f"Will search tilt angle range: {tilt_angle_range[0]:.2f} to {tilt_angle_range[1]:.2f}°")
+            print(f"\n--- Round {round_num + 1}/{optimization_rounds} ---")
+            print(f"  Radius: {radius_range[0]:.2f} to {radius_range[1]:.2f} A")
+            print(f"  Tilt:   {tilt_angle_range[0]:.2f} to {tilt_angle_range[1]:.2f} deg")
+            print(f"  Z-off:  {z_off_range[0]:.2f} to {z_off_range[1]:.2f} A")
 
-            radius_stepsize = (radius_range[1] - radius_range[0]) / number_configurations 
-            tilt_angle_stepsize = (tilt_angle_range[1] - tilt_angle_range[0]) / number_configurations
-            
-            # Generate parameter combinations
-            parameter_combinations = self._generate_parameter_grid(radius_range,
-                                                               tilt_angle_range,
-                                                               number_configurations)
-            
-            # Evaluate all combinations in parallel
-            results = self._evaluate_parameter_set_parallel(parameter_combinations)
-            # Sort by total score (lower is better)
-            results = results.sort_values('total_score').reset_index(drop=True)
-        
+            radius_step = (radius_range[1] - radius_range[0]) / max(grid_size - 1, 1)
+            tilt_step = (tilt_angle_range[1] - tilt_angle_range[0]) / max(grid_size - 1, 1)
+            z_step = (z_off_range[1] - z_off_range[0]) / max(grid_size - 1, 1)
+
+            parameter_combinations = self._generate_parameter_grid(
+                radius_range, tilt_angle_range, z_off_range, grid_size
+            )
+
+            results = self._evaluate_parallel(parameter_combinations)
+
+            # Rank by the chosen metric (lower = better for both)
+            results = results.sort_values(rank_by).reset_index(drop=True)
+
             if save_csv:
                 results.to_csv(f'round{round_num}_results.csv', index=False)
-                print(f"Results saved to 'round{round_num}_results.csv'")
-                print("-"*70)
+                print(f"Results saved to round{round_num}_results.csv")
 
-            # Get best results and update search parameters
-            best_result = results.iloc[0]  # Best result is the first row after sorting
+            best_result = results.iloc[0]
 
-            self.base_radius = results.iloc[0:2]['radius'].mean() # take average of best two results
-            self.base_tilt_angle = results.iloc[0:2]['tilt_angle'].mean() # take average of best two results
+            # Print top results for this round
+            print(f"\n  Top 3 results (ranked by {rank_by}):")
+            for i in range(min(3, len(results))):
+                row = results.iloc[i]
+                print(f"    #{i+1}: r={row['radius']:.2f} A, tilt={row['tilt_angle']:.2f} deg, "
+                      f"z_off={row.get('z_offset', 0):.2f} A, "
+                      f"pore_quality={row['pore_quality']:.1f}, "
+                      f"hbond_lr_bb={row['hbond_lr_bb']:.1f}, "
+                      f"total={row['total_score']:.1f}")
 
-            # define new search ranges based on best result
-            radius_range = (self.base_radius - radius_stepsize, self.base_radius + radius_stepsize)
-            tilt_angle_range = (self.base_tilt_angle - tilt_angle_stepsize, self.base_tilt_angle + tilt_angle_stepsize)
+            # Narrow search around the best result for next round
+            best_r = best_result['radius']
+            best_t = best_result['tilt_angle']
+            best_z = best_result.get('z_offset', 0.0)
 
-        print("\n" + "="*70)
+            radius_range = (best_r - radius_step, best_r + radius_step)
+            tilt_angle_range = (best_t - tilt_step, best_t + tilt_step)
+            z_off_range = (max(0, best_z - z_step), best_z + z_step)
+
+        print("\n" + "=" * 70)
         print("OPTIMIZATION COMPLETE")
-        print("="*70)
-        print(f"Best parameters found:")
-        print(f"  Radius: {best_result['radius']:.2f}A")
-        print(f"  Tilt angle: {best_result['tilt_angle']:.2f}")
-        print(f"  Total score: {best_result['total_score']:.2f}")
-        print(f"  fa_atr: {best_result['fa_atr']:.2f} (reweighted *0.9, to allow minor overlap)")
-        print(f"  fa_rep: {best_result['fa_rep']:.2f} (reweighted *0.02, to allow minor overlap)")
-        print(f"  hbond_sr_bb: {best_result['hbond_sr_bb']:.2f}")
-        print(f"  hbond_lr_bb: {best_result['hbond_lr_bb']:.2f} (reweighted *10, for better hydrogen bond optimization)")
+        print("=" * 70)
+        print(f"Best parameters:")
+        print(f"  Radius:     {best_result['radius']:.2f} A")
+        print(f"  Tilt angle: {best_result['tilt_angle']:.2f} deg")
+        print(f"  Z-offset:   {best_result.get('z_offset', 0):.2f} A")
+        print(f"  Pore quality:  {best_result['pore_quality']:.2f}")
+        print(f"  H-bond/subunit: {best_result.get('hbond_per_subunit', 0):.2f}")
+        print(f"  Total score:   {best_result['total_score']:.2f}")
+        print(f"  fa_atr:  {best_result['fa_atr']:.2f} (weight 0.9)")
+        print(f"  fa_rep:  {best_result['fa_rep']:.2f} (weight 0.02)")
+        print(f"  hbond_sr_bb: {best_result['hbond_sr_bb']:.2f} (weight 1.0)")
+        print(f"  hbond_lr_bb: {best_result['hbond_lr_bb']:.2f} (weight 10.0)")
 
-        # write final structure to pdb file
-        output_pdb = f"optimized_ring_{self.base_radius:.2f}A_{self.base_tilt_angle:.2f}deg.pdb"
+        # Write final structure using the actual best parameters
+        output_pdb = (f"optimized_ring_{best_result['radius']:.2f}A_"
+                      f"{best_result['tilt_angle']:.2f}deg_"
+                      f"{best_result.get('z_offset', 0):.2f}z.pdb")
         self.builder.build_ring(
             n_subunits=self.n_subunits,
-            radius=self.base_radius,
-            tilt_angle=self.base_tilt_angle,)
-        self.builder.write_ring_pdb(output_pdb, centered=True)  
-        
+            radius=best_result['radius'],
+            tilt_angle=best_result['tilt_angle'],
+            z_offset=best_result.get('z_offset', 0.0),
+        )
+        self.builder.write_ring_pdb(output_pdb, centered=True)
+
         return best_result.to_dict()
 
+
 def main():
-    """Main function for command-line usage."""    
-    parser = argparse.ArgumentParser(description='Optimize dimer geometry for circular assembly using parallel asymmetric rotations')
+    parser = argparse.ArgumentParser(
+        description='Optimize ring geometry for circular beta-barrel assembly')
     parser.add_argument('--monomer', required=True, help='Aligned monomer PDB file')
-    parser.add_argument('--n_subunits', type=int, required=True, help='Number of subunits in the ring')
+    parser.add_argument('--n_subunits', type=int, required=True,
+                        help='Number of subunits in the ring')
     parser.add_argument('--angle_range', type=float, nargs=2, default=[-30, 30],
-                        help='Range of tilt angles for the beta-sheet in degrees (default: -30 to 30)')
+                        help='Range of tilt angles in degrees (default: -30 30)')
     parser.add_argument('--radius_range', type=float, nargs=2, default=None,
-                        help='Range of radii for the ring assembly in Angstroms (default: None)')
-    parser.add_argument('--processes', type=int, help='Number of processes to use (default: all available cores)')
-    parser.add_argument('--no_csv', action='store_true', help='Do not save results to CSV files')
-    parser.add_argument('--rounds', type=int, default=2, help='Number of optimization rounds (default: 2)')
-    parser.add_argument('--gasdermin', action='store_true', help='Use empirically tweaked values useful for gasdermin-family proteins (default: False)')
-    
+                        help='Range of radii in Angstroms (default: adaptive)')
+    parser.add_argument('--z_offset_range', type=float, nargs=2, default=[0, 5],
+                        help='Range of z-offsets in Angstroms (default: 0 5)')
+    parser.add_argument('--grid_size', type=int, default=8,
+                        help='Grid points per dimension per round (default: 8)')
+    parser.add_argument('--processes', type=int,
+                        help='Number of processes (default: all cores)')
+    parser.add_argument('--no_csv', action='store_true',
+                        help='Do not save results to CSV files')
+    parser.add_argument('--rounds', type=int, default=3,
+                        help='Number of optimization rounds (default: 3)')
+    parser.add_argument('--rank_by', choices=['pore_quality', 'total_score'],
+                        default='pore_quality',
+                        help='Score to rank by (default: pore_quality)')
+    parser.add_argument('--gasdermin', action='store_true',
+                        help='Enable gasdermin-specific modifications')
+
     args = parser.parse_args()
-    
-    # Run optimization
-    optimizer = RingOptimizer(args.monomer, args.n_subunits, args.gasdermin, n_processes=args.processes)
+
+    optimizer = RingOptimizer(
+        args.monomer, args.n_subunits, args.gasdermin, n_processes=args.processes
+    )
+
     if args.radius_range is None:
-        # Use adaptive radius based on the monomer
-        radius_range = (optimizer.base_radius * 0.6, optimizer.base_radius) # base radius most likely overestimates the radius, so we use 60% of it as minimum
+        radius_range = (optimizer.base_radius * 0.6, optimizer.base_radius)
     else:
         radius_range = tuple(args.radius_range)
 
     results = optimizer.optimize(
-        optimization_rounds=args.rounds,  # Number of optimization rounds
-        radius_range=tuple(radius_range),  # Convert to tuple for consistency
-        angle_range=tuple(args.angle_range),  # Convert to tuple for consistency
-        save_csv=not args.no_csv  # Save results to CSV unless --no_csv is specified
+        optimization_rounds=args.rounds,
+        radius_range=radius_range,
+        angle_range=tuple(args.angle_range),
+        z_offset_range=tuple(args.z_offset_range),
+        grid_size=args.grid_size,
+        rank_by=args.rank_by,
+        save_csv=not args.no_csv,
     )
-    
+
     return results
+
 
 if __name__ == '__main__':
     main()

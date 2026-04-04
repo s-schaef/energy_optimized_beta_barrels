@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 
+import os
 import warnings
 import numpy as np
 import MDAnalysis as mda
@@ -221,95 +222,75 @@ class MonomerAligner:
     def align_to_standard_orientation(self, output_file=None):
         """
         Align monomer to standard orientation:
-        1. Centers protein at origin (0,0,0)
-        2. Align principal axis with z-axis
-        3. Align second principal axis with y-axis
-        
+        1. Align principal axis of largest beta-sheet (or full protein) with z-axis
+        2. Align second principal axis with y-axis
+        3. Center at origin
+
         Parameters:
             output_file (str, optional): If provided, write aligned structure to this file
-            
+
         Returns:
             MDAnalysis.AtomGroup: Aligned protein atoms
         """
         if self.has_beta_sheet:
-            # Align to beta-sheet standard orientation
             print("Aligning monomer using beta-sheet information.")
-            
             sheet_resids = self.largest_sheet_info['sheet_resids']
-            # Select atoms in the largest beta-sheet
-            sheet_atoms = self.protein.select_atoms(f'resid {" ".join(map(str, sheet_resids))} and backbone')
+            sheet_atoms = self.protein.select_atoms(
+                f'resid {" ".join(map(str, sheet_resids))} and backbone')
             pca_positions = sheet_atoms.positions
-
         else:
-            # Fallback to geometric positioning
             print("Aligning monomer using overall protein information.")
-            # Step 1: Center the protein at origin
             center_of_mass = self.protein.center_of_mass()
             self.protein.translate(-center_of_mass)
-        
-            # Calculate principal axes using PCA on CA atoms
+
             ca_atoms = self.protein.select_atoms('name CA')
             if len(ca_atoms) == 0:
                 raise ValueError("No CA atoms found in protein structure")
-                
             pca_positions = ca_atoms.positions
-            
-        # Perform PCA to find principal axes
+
+        # PCA to find principal axes
         pca = PCA(n_components=3)
         pca.fit(pca_positions)
-        
-        # Get the principal axes (eigenvectors)
         principal_axes = pca.components_
-    
+
         z_axis = np.array([0, 0, 1])
         x_axis = np.array([1, 0, 0])
         y_axis = np.array([0, 1, 0])
-        # Source basis (principal components)
+
         source_basis = np.column_stack([principal_axes[0], principal_axes[1], principal_axes[2]])
-        
-        # Target basis
-        target_basis = np.column_stack([z_axis, y_axis, x_axis]) 
-        
-        # Rotation matrix
+        target_basis = np.column_stack([z_axis, y_axis, x_axis])
         rotation_matrix = target_basis @ source_basis.T
-        
-        # Apply rotation to align principal axis with z-axis and second axis with x-axis
+
         self.protein.positions = (rotation_matrix @ self.protein.positions.T).T
 
-
-        # Apply translation to center at origin
+        # Center at origin (relative to beta-sheet if available)
         if self.has_beta_sheet:
-            # Center the beta-sheet atoms at origin
             center_of_mass = sheet_atoms.center_of_mass()
-            self.protein.translate(-center_of_mass)
         else:
-            # Center the entire protein at origin
             center_of_mass = self.protein.center_of_mass()
-            self.protein.translate(-center_of_mass)
+        self.protein.translate(-center_of_mass)
 
-        # Rotate protein to have center of mass at positive z and x-axes
+        # Flip to keep center of mass in positive x and z quadrant
         if self.protein.center_of_mass()[0] < 0:
-            # If center of mass is negative in x, rotate 180 degrees around z-axis
             rotation_180 = np.array([[-1, 0, 0],
                                      [0, -1, 0],
                                      [0, 0, 1]])
             self.protein.positions = (rotation_180 @ self.protein.positions.T).T
         if self.protein.center_of_mass()[2] < 0:
-            # If center of mass is negative in z, rotate 180 degrees around x-axis
             rotation_180 = np.array([[1, 0, 0],
                                      [0, -1, 0],
                                      [0, 0, -1]])
             self.protein.positions = (rotation_180 @ self.protein.positions.T).T
 
-
-        # Write output if requested
         if output_file:
             self.protein.write(output_file)
             print(f"Aligned monomer written to {output_file}")
         else:
-            self.protein.write(f'aligned_{self.pdb_file}')
-            print(f"Aligned monomer written to aligned_{self.pdb_file}")
-            
+            basename = os.path.basename(self.pdb_file)
+            default_output = f'aligned_{basename}'
+            self.protein.write(default_output)
+            print(f"Aligned monomer written to {default_output}")
+
         return self.protein
     
     def get_aligned_monomer(self):
