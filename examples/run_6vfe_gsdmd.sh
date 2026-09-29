@@ -19,8 +19,8 @@ barrel-align --input gsdmd_protomer.pdb --output gsdmd_aligned.pdb
 
 # 3. Coarse screen of radius and tilt angle for a 33-mer
 #    (200 scored assemblies; about 2 minutes on 10 cores)
-barrel-optimize --monomer gsdmd_aligned.pdb --n_subunits 33 --gasdermin
+barrel-optimize --monomer gsdmd_aligned.pdb --n_subunits 33 --cone_angle 10
 
 # 4. Build and score the final model with the chosen parameters
 barrel-build --input gsdmd_aligned.pdb --output gsdmd_33mer.pdb \
-    --n_subunits 33 --radius 128 --tilt_angle -20 --gasdermin --score
+    --n_subunits 33 --radius 128 --tilt_angle -20 --cone_angle 10 --score

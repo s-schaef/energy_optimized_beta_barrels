@@ -18,16 +18,16 @@ The scripts need an internet connection and PyRosetta. The screens take a few mi
 |---|---|---|
 | 1 | `fetch_protomer.py 6VFE A` | `6VFE.pdb`, `gsdmd_protomer.pdb` (residues 3–241) |
 | 2 | `barrel-align` | `gsdmd_aligned.pdb` |
-| 3 | `barrel-optimize --n_subunits 33 --gasdermin` | `round0_results.csv`, `round1_results.csv`, `optimized_ring_*.pdb` |
-| 4 | `barrel-build --radius 128 --tilt_angle -20 --gasdermin --score` | `gsdmd_33mer.pdb` |
+| 3 | `barrel-optimize --n_subunits 33 --cone_angle 10` | `round0_results.csv`, `round1_results.csv`, `optimized_ring_*.pdb` |
+| 4 | `barrel-build --radius 128 --tilt_angle -20 --cone_angle 10 --score` | `gsdmd_33mer.pdb` |
 
-The screen in step 3 ends close to the deposited pore, at a radius of about 127 Å and a tilt of about −21°. The parameters in step 4 are those that best reproduce the deposited 33-mer: Cα RMSD 0.6 Å after superposition, against 4.7 Å at best without `--gasdermin`.
+The screen in step 3 ends close to the deposited pore, at a radius of about 127 Å and a tilt of about −21°. The parameters in step 4 are those that best reproduce the deposited 33-mer, with a Cα RMSD of 0.6 Å after superposition. With a cone angle of 0°, the best fit is 4.7 Å.
 
 ## Example 2: *Vitiosangium* bacterial gasdermin pore (PDB 8SL0, 52-mer)
 
 [`run_8sl0_bgsdm.sh`](run_8sl0_bgsdm.sh)
 
-8SL0 is the cryo-EM structure of the bGSDM in a 'slinky'-like oligomer and contains a single protomer. It is only available as mmCIF, which `fetch_protomer.py` converts. The same publication describes a 52-mer pore, deposited as the integrative model [9A84](https://pdb-ihm.org/entry.html?9A84) in PDB-IHM.
+8SL0 is the cryo-EM structure of the bGSDM in a 'slinky'-like oligomer and contains a single protomer. It is only available as mmCIF, which `fetch_protomer.py` converts. The same publication describes a 52-mer pore, deposited in PDB-IHM as the integrative model [9A84](https://pdb-ihm.org/entry.html?9A84) and, after equilibration, as [9A85](https://pdb-ihm.org/entry.html?9A85).
 
 | Step | Command | Output |
 |---|---|---|
@@ -36,9 +36,9 @@ The screen in step 3 ends close to the deposited pore, at a radius of about 127 
 | 3 | `barrel-optimize --n_subunits 52` | `round0_results.csv`, `round1_results.csv`, `optimized_ring_*.pdb` |
 | 4 | `barrel-build --radius 179 --tilt_angle -17 --score` | `bgsdm_52mer.pdb` |
 
-The parameters in step 4 reproduce the 9A84 pore model with a Cα RMSD of 1.5 Å, without `--gasdermin`; with it, the best fit is 5.6 Å.
+The parameters in step 4, with the default cone angle of 0°, reproduce both pore models with a Cα RMSD of 1.5 Å after superposition. With a cone angle of 10°, the best fit is 5.6 Å.
 
-The screen in step 3 instead ends at a radius of about 185 Å, 6 Å wider than 9A84 (Cα RMSD 6.3 Å). At the published radius the rigid, unminimized protomers overlap more (higher `fa_rep`), so the score favours a slightly wider ring. This is why the screen is only a coarse guide: the final parameters have to be chosen by evaluating the models against prior knowledge and experimental data.
+The screen in step 3 instead ends at a radius of about 185 Å, 6 Å wider than the pore models (Cα RMSD 6.3 Å). At the published radius the rigid, unminimized protomers overlap more (higher `fa_rep`), so the score favours a slightly wider ring. This is why the screen is only a coarse guide: the final parameters have to be chosen by evaluating the models against prior knowledge and experimental data.
 
 ## Checking a model
 
@@ -63,4 +63,4 @@ python examples/fetch_protomer.py my_model.cif B protomer.pdb  # local file
 ## References
 
 - **6VFE**: Xia, S. *et al.* Gasdermin D pore structure reveals preferential release of mature interleukin-1. *Nature* **593**, 607–611 (2021). https://doi.org/10.1038/s41586-021-03478-3
-- **8SL0, 9A84**: Johnson, A.G. *et al.* Structure and assembly of a bacterial gasdermin pore. *Nature* **628**, 657–663 (2024). https://doi.org/10.1038/s41586-024-07216-3
+- **8SL0, 9A84, 9A85**: Johnson, A.G. *et al.* Structure and assembly of a bacterial gasdermin pore. *Nature* **628**, 657–663 (2024). https://doi.org/10.1038/s41586-024-07216-3

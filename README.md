@@ -40,11 +40,11 @@ Without conda, `pip install -e .` in any Python ≥ 3.10 environment works as we
 barrel-align --input protomer.pdb --output protomer_aligned.pdb
 
 # 2. Screen radius and tilt angle for a ring of 33 protomers
-barrel-optimize --monomer protomer_aligned.pdb --n_subunits 33 --gasdermin
+barrel-optimize --monomer protomer_aligned.pdb --n_subunits 33 --cone_angle 10
 
 # 3. Build (and score) the ring with the parameters you settle on
 barrel-build --input protomer_aligned.pdb --output ring_33mer.pdb \
-    --n_subunits 33 --radius 128 --tilt_angle -20 --gasdermin --score
+    --n_subunits 33 --radius 128 --tilt_angle -20 --cone_angle 10 --score
 ```
 
 ## Examples
@@ -71,8 +71,14 @@ If no β-strands are found, the Cα atoms of the whole protein are used instead.
 Each copy of the aligned protomer is rotated about its own center of geometry:
 
 1. by the **tilt angle** around the x-axis (the radial direction), which inclines the β-strands relative to the pore axis;
-2. with `--gasdermin`, by another 10° around the y-axis (the tangential direction). This makes the barrel slightly narrower towards the bottom, which empirically helps for gasdermins. It improves the GSDMD example but not the bacterial gasdermin example, so try both;
+2. by the **cone angle** around the y-axis (the tangential direction). Positive values make the ring narrower at the bottom (−z; after alignment the bulk of the protomer lies at +z). The default is 0°;
 3. by 360°·i/n around the z-axis, to face the ring axis.
+
+A suitable cone angle depends on the pore. We compared 0° and 10° by the Cα RMSD to the published pores, each at its best-fitting radius and tilt:
+- the GSDMD pore 6VFE is reproduced much better at 10° (0.6 Å, against 4.7 Å at 0°);
+- the *Vitiosangium* bGSDM pore models 9A84 and 9A85 are reproduced much better at 0° (1.5 Å, against 5.6 Å at 10°).
+
+Choose the cone angle based on experimental data.
 
 The copy is then placed at a distance **radius** from the ring axis. The radius is therefore the distance from the ring axis to each protomer's center of geometry. It is not the radius of the pore lumen, which is smaller. The assembled ring is centered at the origin with the pore axis along z. Up to 52 protomers are supported (chain IDs A–Z, a–z).
 
@@ -94,7 +100,7 @@ The screen evaluates a grid of radius × tilt angle, 10 × 10 by default, in par
 - `--n_subunits`: number of protomers, 2–52 (default: 30)
 - `--radius`: distance from ring axis to protomer center of geometry in Å (default: 120.0)
 - `--tilt_angle`: tilt angle around the x-axis in degrees (default: -16.0)
-- `--gasdermin`: apply the additional 10° rotation around the y-axis
+- `--cone_angle`: rotation around the y-axis in degrees; positive values narrow the bottom of the ring (default: 0.0)
 - `--score`: score the ring with PyRosetta and print the weighted terms
 
 ### `barrel-optimize`
@@ -105,7 +111,7 @@ The screen evaluates a grid of radius × tilt angle, 10 × 10 by default, in par
 - `--grid_size`: grid points per dimension and round (default: 10)
 - `--rounds`: number of refinement rounds (default: 2)
 - `--processes`: number of parallel processes (default: all cores)
-- `--gasdermin`: apply the additional 10° rotation around the y-axis
+- `--cone_angle`: cone angle in degrees, kept fixed during the screen (default: 0.0)
 - `--no_csv`: do not write the per-round CSV files
 
 The scripts `alignment_module.py`, `ring_builder.py` and `optimization_module.py` in the repository root accept the same options as the corresponding commands.
@@ -125,8 +131,8 @@ from barrel_builder import align_monomer_from_file, RingBuilder, RingOptimizer
 
 align_monomer_from_file("protomer.pdb", "protomer_aligned.pdb")
 
-builder = RingBuilder("protomer_aligned.pdb", gasdermin=True)
-builder.build_ring(n_subunits=33, radius=128.0, tilt_angle=-20.0)
+builder = RingBuilder("protomer_aligned.pdb")
+builder.build_ring(n_subunits=33, radius=128.0, tilt_angle=-20.0, cone_angle=10.0)
 builder.write_ring_pdb("ring_33mer.pdb")
 scores = builder.score_ring()  # requires PyRosetta
 ```
@@ -144,7 +150,7 @@ The scoring test is skipped if PyRosetta is not installed.
 ## References for the example structures
 
 - **6VFE**: Xia, S., Zhang, Z., Magupalli, V.G., Pablo, J.L., Dong, Y., Vora, S.M., Wang, L., Fu, T.M., Jacobson, M.P., Greka, A., Lieberman, J., Ruan, J. & Wu, H. Gasdermin D pore structure reveals preferential release of mature interleukin-1. *Nature* **593**, 607–611 (2021). https://doi.org/10.1038/s41586-021-03478-3
-- **8SL0** and the integrative 52-mer pore model **9A84** (PDB-IHM): Johnson, A.G., Mayer, M.L., Schaefer, S.L., McNamara-Bordewick, N.K., Hummer, G. & Kranzusch, P.J. Structure and assembly of a bacterial gasdermin pore. *Nature* **628**, 657–663 (2024). https://doi.org/10.1038/s41586-024-07216-3
+- **8SL0** and the integrative 52-mer pore models **9A84** and **9A85** (equilibrated; PDB-IHM): Johnson, A.G., Mayer, M.L., Schaefer, S.L., McNamara-Bordewick, N.K., Hummer, G. & Kranzusch, P.J. Structure and assembly of a bacterial gasdermin pore. *Nature* **628**, 657–663 (2024). https://doi.org/10.1038/s41586-024-07216-3
 
 ## License
 

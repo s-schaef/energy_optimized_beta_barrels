@@ -33,14 +33,6 @@ class TestRingBuilderInit:
         with pytest.raises(FileNotFoundError):
             RingBuilder("/nonexistent/file.pdb")
 
-    def test_gasdermin_flag_stored(self, monomer_pdb):
-        builder = RingBuilder(monomer_pdb, gasdermin=True)
-        assert builder.gasdermin is True
-
-    def test_gasdermin_default_false(self, monomer_pdb):
-        builder = RingBuilder(monomer_pdb)
-        assert builder.gasdermin is False
-
 
 class TestBuildRing:
     def test_basic_ring(self, monomer_pdb):
@@ -98,12 +90,33 @@ class TestBuildRing:
         second = ring.select_atoms(f"segid {segids[1]}").positions
         assert np.allclose(first @ rot.T, second, atol=1e-3)
 
-    def test_gasdermin_flag_changes_geometry(self, helix_pdb):
-        """The gasdermin flag passed to the constructor must be applied."""
-        plain = RingBuilder(helix_pdb).build_ring(n_subunits=4, radius=50.0)
-        pos_plain = plain.atoms.positions.copy()
-        gasdermin = RingBuilder(helix_pdb, gasdermin=True).build_ring(n_subunits=4, radius=50.0)
-        assert not np.allclose(pos_plain, gasdermin.atoms.positions, atol=0.1)
+    def test_cone_angle_default_is_zero(self, helix_pdb):
+        builder = RingBuilder(helix_pdb)
+        default = builder.build_ring(n_subunits=4, radius=50.0).atoms.positions.copy()
+        zero = builder.build_ring(n_subunits=4, radius=50.0, cone_angle=0.0).atoms.positions
+        assert np.allclose(default, zero)
+
+    def test_cone_angle_changes_geometry(self, helix_pdb):
+        builder = RingBuilder(helix_pdb)
+        plain = builder.build_ring(n_subunits=4, radius=50.0).atoms.positions.copy()
+        coned = builder.build_ring(n_subunits=4, radius=50.0, cone_angle=10.0).atoms.positions
+        assert not np.allclose(plain, coned, atol=0.1)
+
+    def test_positive_cone_angle_narrows_bottom(self, helix_pdb):
+        """With a positive cone angle, the bottom (-z) of each subunit moves towards the axis."""
+        builder = RingBuilder(helix_pdb)
+
+        def radial_distance(cone_angle):
+            builder.build_ring(n_subunits=6, radius=50.0, cone_angle=cone_angle)
+            builder.center_ring()
+            positions = builder.ring.select_atoms("segid A").positions
+            return np.linalg.norm(positions[:, :2], axis=1), positions[:, 2]
+
+        r_flat, z_flat = radial_distance(0.0)
+        r_cone, _ = radial_distance(10.0)
+        bottom = z_flat < np.median(z_flat)
+        assert r_cone[bottom].mean() < r_flat[bottom].mean()
+        assert r_cone[~bottom].mean() > r_flat[~bottom].mean()
 
     def test_unique_segment_ids(self, monomer_pdb):
         builder = RingBuilder(monomer_pdb)

@@ -65,14 +65,12 @@ class RingBuilder:
     monomer is placed on the positive x-axis.
     """
 
-    def __init__(self, monomer_pdb: str, gasdermin: bool = False):
+    def __init__(self, monomer_pdb: str):
         """
         Initialize ring builder with aligned monomer.
 
         Parameters:
             monomer_pdb (str): Path to aligned monomer PDB file
-            gasdermin (bool): Apply an additional 10 degree rotation around the
-                y-axis (empirically useful for gasdermin pores)
 
         Raises:
             FileNotFoundError: If monomer PDB file doesn't exist
@@ -88,7 +86,6 @@ class RingBuilder:
         if len(self.monomer_atoms) == 0:
             raise ValueError(f"No protein atoms found in {monomer_pdb}")
 
-        self.gasdermin = gasdermin
         self.ring = None
         self.scorefxn = None
         self.output_pdb = None
@@ -102,19 +99,23 @@ class RingBuilder:
             self.scorefxn = _get_score_function()
 
     def build_ring(self, n_subunits: int = 30, radius: float = 50.0,
-                   tilt_angle: float = 0.0):
+                   tilt_angle: float = 0.0, cone_angle: float = 0.0):
         """
         Build a circular (C_n symmetric) assembly of rigid protein subunits.
 
         Each subunit is rotated about its own center of geometry (tilt around x,
-        optionally 10 degrees around y for gasdermins, then around z to face the
-        ring axis) and translated to its position on the ring.
+        cone angle around y, then around z to face the ring axis) and
+        translated to its position on the ring.
 
         Parameters:
             n_subunits (int): Number of subunits in the ring (2-52)
             radius (float): Distance in Angstroms from the ring axis to the
                 center of geometry of each subunit (not the pore lumen radius)
-            tilt_angle (float): Tilt angle of each subunit around the x-axis in degrees
+            tilt_angle (float): Rotation of each subunit around the radial
+                (x) axis in degrees
+            cone_angle (float): Rotation of each subunit around the tangential
+                (y) axis in degrees; positive values make the ring narrower
+                at the bottom (-z)
 
         Returns:
             MDAnalysis.Universe: The assembled ring structure
@@ -136,8 +137,8 @@ class RingBuilder:
             if tilt_angle != 0.0:
                 protein.rotateby(tilt_angle, axis=[1, 0, 0])
 
-            if self.gasdermin:
-                protein.rotateby(10, axis=[0, 1, 0])
+            if cone_angle != 0.0:
+                protein.rotateby(cone_angle, axis=[0, 1, 0])
 
             angle = 360 * idx / n_subunits
             protein.rotateby(angle, axis=[0, 0, 1])
@@ -154,7 +155,7 @@ class RingBuilder:
         self.ring = mda.Merge(*[u.atoms for u in tmp_universes])
 
         print(f"Built ring with {n_subunits} subunits, radius {radius:.1f} A, "
-              f"tilt {tilt_angle:.1f} deg")
+              f"tilt {tilt_angle:.1f} deg, cone {cone_angle:.1f} deg")
         return self.ring
 
     def center_ring(self):
@@ -239,19 +240,17 @@ def main():
                         help='Number of subunits, 2-52 (default: 30)')
     parser.add_argument('--score', action='store_true',
                         help='Score the assembly with PyRosetta')
-    parser.add_argument('--gasdermin', action='store_true',
-                        help='Apply the additional 10 degree y-rotation used for gasdermins')
+    parser.add_argument('--cone_angle', type=float, default=0.0,
+                        help='Rotation around the tangential (y) axis in degrees; positive '
+                             'values make the ring narrower at the bottom (default: 0.0)')
 
     args = parser.parse_args()
 
     try:
-        builder = RingBuilder(args.input, gasdermin=args.gasdermin)
+        builder = RingBuilder(args.input)
         builder.output_pdb = args.output
 
-        if args.gasdermin:
-            print("Gasdermin-specific modifications enabled")
-
-        builder.build_ring(args.n_subunits, args.radius, args.tilt_angle)
+        builder.build_ring(args.n_subunits, args.radius, args.tilt_angle, args.cone_angle)
 
         if args.score:
             score = builder.score_ring()
