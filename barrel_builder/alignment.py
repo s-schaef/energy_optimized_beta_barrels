@@ -67,6 +67,7 @@ class MonomerAligner:
         self.pdb_file = pdb_file
         self.universe = mda.Universe(self.pdb_file)
         self.protein = self.universe.select_atoms('protein')
+        self._check_single_chain()
 
         self.ss_dict = self.get_secondary_structure()
 
@@ -82,11 +83,25 @@ class MonomerAligner:
             print(f"Found {len(self.beta_sheets)} beta sheets")
             self.largest_sheet_info = self.find_largest_sheet()
 
+    def _check_single_chain(self):
+        """Raise if the input is not a single protein chain with unique residue IDs."""
+        if len(self.protein) == 0:
+            raise ValueError(f"No protein atoms found in {self.pdb_file}")
+        chains = np.unique(self.protein.chainIDs)
+        if len(chains) > 1:
+            raise ValueError(
+                f"{self.pdb_file} contains {len(chains)} protein chains "
+                f"({', '.join(chains)}). Provide a single protomer, e.g. with "
+                f"examples/fetch_protomer.py or by extracting one chain.")
+        resids = self.protein.residues.resids
+        if len(np.unique(resids)) != len(resids):
+            raise ValueError(f"{self.pdb_file} contains duplicate residue IDs.")
+
     def get_secondary_structure(self):
         """Extract secondary structure using DSSP through MDAnalysis."""
-        dssp = DSSP(self.universe).run()
+        dssp = DSSP(self.protein).run()
         ss_dict = {}
-        for resid, ss in zip(self.universe.residues.resids, dssp.results.dssp[0]):
+        for resid, ss in zip(self.protein.residues.resids, dssp.results.dssp[0]):
             ss_dict[resid] = ss
         return ss_dict
 
@@ -221,6 +236,12 @@ class MonomerAligner:
         source_basis = np.column_stack([principal_axes[0], principal_axes[1], principal_axes[2]])
         target_basis = np.column_stack([z_axis, y_axis, x_axis])
         rotation_matrix = target_basis @ source_basis.T
+        if np.linalg.det(rotation_matrix) < 0:
+            # The signs of PCA axes are arbitrary, so they can form a basis that
+            # turns this into a reflection. Flip the third axis to get a proper
+            # rotation; otherwise the protein would be mirrored (L -> D).
+            source_basis[:, 2] *= -1
+            rotation_matrix = target_basis @ source_basis.T
 
         self.protein.positions = (rotation_matrix @ self.protein.positions.T).T
 
