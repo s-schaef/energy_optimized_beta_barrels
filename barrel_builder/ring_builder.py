@@ -2,6 +2,7 @@
 
 import os
 import argparse
+import tempfile
 import warnings
 import numpy as np
 import MDAnalysis as mda
@@ -9,22 +10,59 @@ from string import ascii_uppercase as auc
 from string import ascii_lowercase as alc
 from typing import Dict
 
-# PyRosetta is imported lazily in _initialize_pyrosetta() so that
+# PyRosetta is imported lazily in _get_score_function() so that
 # ring building and geometry tests can run without it installed.
 pyrosetta = None
 rosetta = None
+
+# Empirical weights of the PyRosetta terms used to score assemblies.
+# fa_atr and fa_rep are downscaled to tolerate minor overlaps of the rigid
+# protomers; backbone hydrogen bonds (hbond_lr_bb) are upweighted.
+SCORE_WEIGHTS = {
+    'fa_atr': 0.9,
+    'fa_rep': 0.02,
+    'hbond_sr_bb': 1.0,
+    'hbond_lr_bb': 10.0,
+}
+
+# One score function per process (PyRosetta is initialized only once).
+_SCOREFXN = None
 
 warnings.filterwarnings('ignore', message='.*CRYST1 record.*')
 warnings.filterwarnings('ignore', message='.*Reader has no dt information.*')
 warnings.filterwarnings('ignore', message='.*Using default value of.*')
 
 
+def _get_score_function():
+    """Initialize PyRosetta once per process and return the reweighted score function."""
+    global pyrosetta, rosetta, _SCOREFXN
+    if _SCOREFXN is not None:
+        return _SCOREFXN
+
+    import pyrosetta as _pyrosetta
+    from pyrosetta import rosetta as _rosetta
+    pyrosetta = _pyrosetta
+    rosetta = _rosetta
+
+    pyrosetta.init('-mute all')
+
+    scorefxn = pyrosetta.create_score_function('empty')
+    for term, weight in SCORE_WEIGHTS.items():
+        scorefxn.set_weight(getattr(rosetta.core.scoring, term), weight)
+    _SCOREFXN = scorefxn
+
+    print("PyRosetta initialized with scoring terms: "
+          + ", ".join(f"{t} (x{w})" for t, w in SCORE_WEIGHTS.items()))
+    return _SCOREFXN
+
+
 class RingBuilder:
     """
     Build circular protein assemblies from aligned monomer structures.
 
-    The monomer should be pre-aligned so that the desired interface faces
-    outward when positioned in the ring.
+    The monomer should be pre-aligned (see barrel_builder.alignment) so that
+    its beta-sheet runs along the z-axis and faces the ring center once the
+    monomer is placed on the positive x-axis.
     """
 
     def __init__(self, monomer_pdb: str, gasdermin: bool = False):
@@ -33,7 +71,8 @@ class RingBuilder:
 
         Parameters:
             monomer_pdb (str): Path to aligned monomer PDB file
-            gasdermin (bool): Enable gasdermin-specific y-axis rotation
+            gasdermin (bool): Apply an additional 10 degree rotation around the
+                y-axis (empirically useful for gasdermin pores)
 
         Raises:
             FileNotFoundError: If monomer PDB file doesn't exist
@@ -58,39 +97,24 @@ class RingBuilder:
               f"{len(self.monomer_atoms)} protein atoms")
 
     def _initialize_pyrosetta(self):
-        """Initialize PyRosetta with a scoring function tuned for beta-barrel pore quality."""
-        if self.scorefxn is not None:
-            return
-
-        global pyrosetta, rosetta
-        import pyrosetta as _pyrosetta
-        from pyrosetta import rosetta as _rosetta
-        pyrosetta = _pyrosetta
-        rosetta = _rosetta
-
-        pyrosetta.init('-mute all')
-
-        self.scorefxn = pyrosetta.create_score_function('empty')
-        self.scorefxn.set_weight(rosetta.core.scoring.fa_atr, 0.9)
-        self.scorefxn.set_weight(rosetta.core.scoring.fa_rep, 0.02)
-        self.scorefxn.set_weight(rosetta.core.scoring.hbond_sr_bb, 1.0)
-        self.scorefxn.set_weight(rosetta.core.scoring.hbond_lr_bb, 10.0)
-
-        print("PyRosetta initialized with scoring terms: "
-              "fa_atr, fa_rep, hbond_sr_bb, hbond_lr_bb")
+        """Initialize PyRosetta with the empirically reweighted scoring function."""
+        if self.scorefxn is None:
+            self.scorefxn = _get_score_function()
 
     def build_ring(self, n_subunits: int = 30, radius: float = 50.0,
-                   tilt_angle: float = 0.0, z_offset: float = 0.0):
+                   tilt_angle: float = 0.0):
         """
-        Build a circular assembly of protein subunits.
+        Build a circular (C_n symmetric) assembly of rigid protein subunits.
+
+        Each subunit is rotated about its own center of geometry (tilt around x,
+        optionally 10 degrees around y for gasdermins, then around z to face the
+        ring axis) and translated to its position on the ring.
 
         Parameters:
             n_subunits (int): Number of subunits in the ring (2-52)
-            radius (float): Radius of the circular assembly in Angstroms
-            tilt_angle (float): Tilt angle of each subunit around x-axis in degrees
-            z_offset (float): Alternating vertical offset between adjacent subunits
-                in Angstroms. In real beta barrels, adjacent strands are staggered
-                along the barrel axis to allow proper hydrogen bonding.
+            radius (float): Distance in Angstroms from the ring axis to the
+                center of geometry of each subunit (not the pore lumen radius)
+            tilt_angle (float): Tilt angle of each subunit around the x-axis in degrees
 
         Returns:
             MDAnalysis.Universe: The assembled ring structure
@@ -120,9 +144,8 @@ class RingBuilder:
 
             x_pos = radius * np.cos(np.radians(angle))
             y_pos = radius * np.sin(np.radians(angle))
-            z_pos = z_offset * ((-1) ** idx)
 
-            protein.translate([x_pos, y_pos, z_pos])
+            protein.translate([x_pos, y_pos, 0])
 
             protein.segments.segids = segid_list[idx]
             protein.atoms.chainIDs = segid_list[idx]
@@ -131,7 +154,7 @@ class RingBuilder:
         self.ring = mda.Merge(*[u.atoms for u in tmp_universes])
 
         print(f"Built ring with {n_subunits} subunits, radius {radius:.1f} A, "
-              f"tilt {tilt_angle:.1f} deg, z_offset {z_offset:.1f} A")
+              f"tilt {tilt_angle:.1f} deg")
         return self.ring
 
     def center_ring(self):
@@ -152,11 +175,12 @@ class RingBuilder:
 
     def score_ring(self) -> Dict[str, float]:
         """
-        Score the assembled ring using PyRosetta.
+        Score the assembled ring using the reweighted PyRosetta score function.
 
-        Returns a dictionary with individual energy components and a composite
-        pore_quality score that emphasizes inter-subunit hydrogen bonding
-        while penalizing atomic clashes.
+        The rigid assembly is scored as is (no minimization or repacking).
+        All returned components are weighted (see SCORE_WEIGHTS) and sum
+        to total_score. Scores are only meaningful for comparing geometries
+        built from the same monomer.
         """
         if self.ring is None:
             raise RuntimeError("Ring must be built before scoring. Call build_ring() first.")
@@ -167,7 +191,6 @@ class RingBuilder:
         temporary = False
         if not self.output_pdb:
             temporary = True
-            import tempfile
             with tempfile.NamedTemporaryFile(suffix='.pdb', delete=False) as tmp:
                 temp_pdb_path = tmp.name
             self.output_pdb = temp_pdb_path
@@ -176,33 +199,12 @@ class RingBuilder:
             self.write_ring_pdb(self.output_pdb, centered=True)
             pose = pyrosetta.pose_from_pdb(self.output_pdb)
 
-            total_score = self.scorefxn(pose)
-
-            fa_atr = self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.fa_atr)
-            fa_rep = self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.fa_rep)
-            hbond_sr_bb = self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.hbond_sr_bb)
-            hbond_lr_bb = self.scorefxn.score_by_scoretype(pose, rosetta.core.scoring.hbond_lr_bb)
-
-            n_subunits = len(self.ring.segments)
-            hbond_per_subunit = hbond_lr_bb / n_subunits if n_subunits > 0 else 0
-
-            pore_quality = (
-                hbond_lr_bb * 10.0
-                + hbond_sr_bb * 1.0
-                + fa_atr * 0.5
-                + fa_rep * 0.5
-            )
-
-            return {
-                'total_score': total_score,
-                'fa_atr': fa_atr,
-                'fa_rep': fa_rep,
-                'hbond_sr_bb': hbond_sr_bb,
-                'hbond_lr_bb': hbond_lr_bb,
-                'hbond_per_subunit': hbond_per_subunit,
-                'pore_quality': pore_quality,
-                'n_subunits': n_subunits,
-            }
+            scores = {'total_score': self.scorefxn(pose)}
+            for term in SCORE_WEIGHTS:
+                scores[term] = self.scorefxn.score_by_scoretype(
+                    pose, getattr(rosetta.core.scoring, term))
+            scores['n_subunits'] = len(self.ring.segments)
+            return scores
 
         finally:
             if temporary and os.path.exists(temp_pdb_path):
@@ -226,20 +228,19 @@ def main():
     """CLI entry point for barrel-build."""
     parser = argparse.ArgumentParser(
         description='Build a circular protein assembly from an aligned monomer PDB file.')
-    parser.add_argument('--input', required=True, help='Monomeric input PDB file')
-    parser.add_argument('--output', required=True, help='Circular output PDB file')
+    parser.add_argument('--input', required=True, help='Aligned monomer PDB file')
+    parser.add_argument('--output', required=True, help='Output PDB file for the ring')
     parser.add_argument('--radius', type=float, default=120.0,
-                        help='Radius in Angstroms (default: 120.0)')
+                        help='Distance from ring axis to subunit center of geometry '
+                             'in Angstroms (default: 120.0)')
     parser.add_argument('--tilt_angle', type=float, default=-16.0,
-                        help='Tilt angle in degrees (default: -16.0)')
-    parser.add_argument('--z_offset', type=float, default=0.0,
-                        help='Alternating z-offset in Angstroms (default: 0.0)')
+                        help='Tilt angle around the x-axis in degrees (default: -16.0)')
     parser.add_argument('--n_subunits', type=int, default=30,
-                        help='Number of subunits (default: 30)')
+                        help='Number of subunits, 2-52 (default: 30)')
     parser.add_argument('--score', action='store_true',
                         help='Score the assembly with PyRosetta')
     parser.add_argument('--gasdermin', action='store_true',
-                        help='Enable gasdermin-specific modifications')
+                        help='Apply the additional 10 degree y-rotation used for gasdermins')
 
     args = parser.parse_args()
 
@@ -250,13 +251,13 @@ def main():
         if args.gasdermin:
             print("Gasdermin-specific modifications enabled")
 
-        builder.build_ring(args.n_subunits, args.radius, args.tilt_angle, args.z_offset)
+        builder.build_ring(args.n_subunits, args.radius, args.tilt_angle)
 
         if args.score:
             score = builder.score_ring()
             print(f"Total score: {score['total_score']:.2f}")
-            print(f"Pore quality: {score['pore_quality']:.2f}")
-            print(f"H-bonds per subunit: {score['hbond_per_subunit']:.2f}")
+            for term, weight in SCORE_WEIGHTS.items():
+                print(f"  {term}: {score[term]:.2f} (weight {weight})")
         else:
             builder.write_ring_pdb(args.output)
 

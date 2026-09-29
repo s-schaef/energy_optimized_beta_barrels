@@ -68,51 +68,42 @@ class TestBuildRing:
             builder.build_ring(n_subunits=4, radius=-10)
 
     def test_ring_is_circular(self, monomer_pdb):
-        """Subunit centers should lie approximately on a circle of the given radius."""
+        """Subunit centers of geometry lie on a circle of the given radius."""
         builder = RingBuilder(monomer_pdb)
         radius = 60.0
         ring = builder.build_ring(n_subunits=8, radius=radius)
 
-        for seg in ring.segments:
-            atoms = ring.select_atoms(f"segid {seg.segid}")
-            com = atoms.center_of_mass()
-            # Distance from ring center (approximately origin) in xy plane
-            r_xy = np.sqrt(com[0] ** 2 + com[1] ** 2)
-            assert abs(r_xy - radius) < 15.0, (
-                f"Segment {seg.segid} COM r_xy={r_xy:.1f} far from radius={radius}"
-            )
+        centers = np.array([
+            ring.select_atoms(f"segid {seg.segid}").center_of_geometry()
+            for seg in ring.segments
+        ])
+        ring_center = centers.mean(axis=0)
+        r_xy = np.linalg.norm((centers - ring_center)[:, :2], axis=1)
+        assert np.allclose(r_xy, radius, atol=1e-3)
+        assert np.allclose(centers[:, 2], centers[0, 2], atol=1e-3)
 
-    def test_z_offset_alternates(self, monomer_pdb):
-        """With z_offset > 0, adjacent subunits should be at different z heights."""
+    def test_ring_is_symmetric(self, monomer_pdb):
+        """Rotating subunit i by 360/n degrees around the ring axis gives subunit i+1."""
         builder = RingBuilder(monomer_pdb)
-        z_off = 3.0
-        ring = builder.build_ring(n_subunits=6, radius=50.0, z_offset=z_off)
+        n = 6
+        ring = builder.build_ring(n_subunits=n, radius=50.0, tilt_angle=-15.0)
+        builder.center_ring()
 
-        z_centers = []
-        for seg in ring.segments:
-            atoms = ring.select_atoms(f"segid {seg.segid}")
-            z_centers.append(atoms.center_of_mass()[2])
+        angle = np.radians(360 / n)
+        rot = np.array([[np.cos(angle), -np.sin(angle), 0],
+                        [np.sin(angle), np.cos(angle), 0],
+                        [0, 0, 1]])
+        segids = [seg.segid for seg in ring.segments]
+        first = ring.select_atoms(f"segid {segids[0]}").positions
+        second = ring.select_atoms(f"segid {segids[1]}").positions
+        assert np.allclose(first @ rot.T, second, atol=1e-3)
 
-        # Adjacent subunits should differ in z
-        for i in range(len(z_centers) - 1):
-            diff = abs(z_centers[i] - z_centers[i + 1])
-            assert diff > 0.5, (
-                f"Adjacent z-centers too close: {z_centers[i]:.2f} vs {z_centers[i+1]:.2f}"
-            )
-
-    def test_z_offset_zero_is_flat(self, monomer_pdb):
-        """With z_offset=0, all subunits should be in roughly the same z plane."""
-        builder = RingBuilder(monomer_pdb)
-        ring = builder.build_ring(n_subunits=6, radius=50.0, z_offset=0.0)
-
-        z_centers = []
-        for seg in ring.segments:
-            atoms = ring.select_atoms(f"segid {seg.segid}")
-            z_centers.append(atoms.center_of_mass()[2])
-
-        z_range = max(z_centers) - min(z_centers)
-        # Should be near zero (only structural extent, not stagger)
-        assert z_range < 1.0, f"z_offset=0 but z range is {z_range:.2f}"
+    def test_gasdermin_flag_changes_geometry(self, helix_pdb):
+        """The gasdermin flag passed to the constructor must be applied."""
+        plain = RingBuilder(helix_pdb).build_ring(n_subunits=4, radius=50.0)
+        pos_plain = plain.atoms.positions.copy()
+        gasdermin = RingBuilder(helix_pdb, gasdermin=True).build_ring(n_subunits=4, radius=50.0)
+        assert not np.allclose(pos_plain, gasdermin.atoms.positions, atol=0.1)
 
     def test_unique_segment_ids(self, monomer_pdb):
         builder = RingBuilder(monomer_pdb)
