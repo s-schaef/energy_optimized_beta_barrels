@@ -1,26 +1,33 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "barrel-builder"
-version = "0.2.0"
-description = "Build and optimize circular beta-barrel protein assemblies"
+version = "1.0.0"
+description = "Build and coarsely screen rigid-body models of circular beta-barrel protein assemblies"
+readme = "README.md"
 license = "BSD-3-Clause"
-requires-python = ">=3.9"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "scipy",
     "scikit-learn",
     "pandas",
-    "MDAnalysis",
+    "MDAnalysis>=2.8",
     "biopython",
 ]
 
+# PyRosetta (needed for scoring) is not on PyPI; see README for installation.
+
 [project.optional-dependencies]
-scoring = ["pyrosetta"]
+test = ["pytest"]
 
 [project.scripts]
 barrel-align = "barrel_builder.alignment:main"
 barrel-build = "barrel_builder.ring_builder:main"
 barrel-optimize = "barrel_builder.optimization:main"
+
+[tool.setuptools]
+packages = ["barrel_builder"]
