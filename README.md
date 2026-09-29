@@ -1,213 +1,155 @@
 # Beta-Barrel Assembly Builder
 
-A computational tool for building and optimizing circular beta-barrel protein assemblies from monomeric structures. This package uses modified PyRosetta scoring functions to optimize ring geometry through parallel grid search, with special support for gasdermin-family proteins.
+`barrel-builder` builds circular (C<sub>n</sub>-symmetric) models of β-barrel pores, such as gasdermin pores, from the structure of a single protomer. It aligns the protomer, arranges n rigid copies on a ring and screens ring geometries (radius and tilt angle) with an empirically reweighted PyRosetta score.
 
-## Features
+## Scope and limitations
 
-- **Automatic beta-sheet alignment**: Aligns protein monomers to a standard orientation using principal component analysis (PCA)
-- **Beta-sheet detection**: Identifies and uses the largest beta-sheet for improved alignment
-- **Pore-quality-focused optimization**: Ranks results by inter-subunit hydrogen bonding (pore quality) rather than raw total energy
-- **Z-offset parameter**: Supports alternating vertical stagger between adjacent subunits for proper beta-barrel hydrogen bonding
-- **3D parameter search**: Optimizes radius, tilt angle, and z-offset simultaneously
-- **Parallel optimization**: Uses multiprocessing for efficient parameter space exploration
-- **Flexible ring construction**: Supports rings with 2-52 subunits
-- **PyRosetta scoring**: Evaluates assemblies using atomic attraction/repulsion and hydrogen bonding terms
-- **Gasdermin-specific mode**: Special optimizations for gasdermin-family proteins
+This is a tool for **coarse structure identification**:
+
+- The models are **rigid-body assemblies of the unmodified protomer**. They are **not energy-minimized** or otherwise relaxed, and the protomer conformation is never changed.
+- The PyRosetta energy terms are **empirically reweighted** (`fa_atr` ×0.9, `fa_rep` ×0.02, `hbond_sr_bb` ×1.0, `hbond_lr_bb` ×10.0). This tolerates small overlaps between the rigid protomers and favours backbone hydrogen bonds. The resulting scores are not physical energies and only compare geometries built from the same protomer.
+- Use the score as a **coarse screen during geometry exploration**, not to select the final parameters.
+- **Evaluate every resulting structure manually** against known insights (stoichiometry, homologous pore structures, membrane insertion) and against experimental data such as a cryo-EM density.
 
 ## Installation
 
-### Install conda environment
+Clone the repository and create the conda environment:
+
 ```bash
 git clone https://github.com/s-schaef/energy_optimized_beta_barrels.git
 cd energy_optimized_beta_barrels
 conda env create -f environment.yml
 conda activate energy_optimized_beta_barrels
-```
-
-### Install the package
-
-```bash
 pip install -e .
 ```
 
-This registers three CLI commands (`barrel-align`, `barrel-build`, `barrel-optimize`) that work from any directory once the environment is activated.
+This installs the command-line tools `barrel-align`, `barrel-build` and `barrel-optimize`.
 
-### Install PyRosetta into your active environment
-
-PyRosetta is free for academic use under the license found here https://github.com/RosettaCommons/rosetta/blob/main/LICENSE.PyRosetta.md
+Scoring (`barrel-optimize` and `barrel-build --score`) requires [PyRosetta](https://www.pyrosetta.org), which is free for academic use under its [license](https://github.com/RosettaCommons/rosetta/blob/main/LICENSE.PyRosetta.md). The environment already contains the installer:
 
 ```bash
-pip install pyrosetta-installer 
 python -c 'import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()'
 ```
 
-## Usage
+Without conda, `pip install -e .` in any Python ≥ 3.10 environment works as well; PyRosetta is then installed with `pip install pyrosetta-installer` followed by the command above.
 
-The package consists of three main modules that work together. After `pip install -e .`, use the `barrel-*` commands from anywhere:
-
-### 1. Align Your Monomer
-
-First, align your monomeric protein structure to a standard orientation:
+## Quick start
 
 ```bash
-barrel-align --input monomer.pdb --output monomer_aligned.pdb
+# 1. Align a single protomer (one chain; see examples/fetch_protomer.py)
+barrel-align --input protomer.pdb --output protomer_aligned.pdb
+
+# 2. Screen radius and tilt angle for a ring of 33 protomers
+barrel-optimize --monomer protomer_aligned.pdb --n_subunits 33 --gasdermin
+
+# 3. Build (and score) the ring with the parameters you settle on
+barrel-build --input protomer_aligned.pdb --output ring_33mer.pdb \
+    --n_subunits 33 --radius 128 --tilt_angle -20 --gasdermin --score
 ```
 
-This will:
-- Detect beta-sheets (if present)
-- Align the largest beta-sheet or protein principal axis with the z-axis
-- Center the beta-sheet (if not present the center of mass) of the structure at the origin
+## Examples
 
-### 2. (If you already know the geometry) Directly build a Ring
+[examples/](examples/README.md) contains two complete workflows based on published structures:
 
-Create a circular assembly with specified parameters:
+- `run_6vfe_gsdmd.sh`: the human GSDMD pore (PDB 6VFE, 33-mer)
+- `run_8sl0_bgsdm.sh`: the *Vitiosangium* bacterial gasdermin pore (PDB 8SL0, 52-mer)
 
-```bash
-# Basic ring with 30 subunits
-barrel-build --input monomer_aligned.pdb --output ring_30mer.pdb --n_subunits 30
+## How it works
 
-# Ring with custom parameters including z-offset stagger and scoring
-barrel-build --input monomer_aligned.pdb --output ring_custom.pdb \
-    --n_subunits 24 --radius 85.0 --tilt_angle -16.0 --z_offset 2.5 --score
-```
+### 1. Alignment (`barrel-align`)
 
-Empirically, gasdermin assemblies benefit from an additional 10 deg. rotation around the y-axis that results in beta-barrels that are slightly narrower towards the bottom. The --gasdermin flag enables this. 
+DSSP (via MDAnalysis) assigns β-strands. Strands linked by backbone hydrogen bonds are grouped into sheets, and the largest sheet is used for the alignment:
 
-```bash
-# For gasdermin proteins
-barrel-build --input monomer_aligned.pdb --output ring_custom.pdb \
-    --n_subunits 33 --radius 120.0 --tilt_angle -16.0 --score --gasdermin
-```
+- its first principal axis is aligned with z and its second with y;
+- its center of mass is placed at the origin;
+- the protein is flipped so that the rest of the protein lies at +x and +z.
 
-### 3. (If you don't know the geometry) Search for the best Ring Geometry
+If no β-strands are found, the Cα atoms of the whole protein are used instead. The input must be a single protein chain.
 
-Find optimal ring parameters through parallel grid search:
+### 2. Ring geometry (`barrel-build`)
 
-```bash
-# Basic optimization (3 rounds, ranked by pore quality)
-barrel-optimize --monomer monomer_aligned.pdb --n_subunits 30
+Each copy of the aligned protomer is rotated about its own center of geometry:
 
-# Custom optimization with specific ranges
-barrel-optimize --monomer monomer_aligned.pdb --n_subunits 24 \
-    --radius_range 70 90 --angle_range -20 20 --z_offset_range 0 4 --rounds 3
+1. by the **tilt angle** around the x-axis (the radial direction), which inclines the β-strands relative to the pore axis;
+2. with `--gasdermin`, by another 10° around the y-axis (the tangential direction). This makes the barrel slightly narrower towards the bottom, which empirically helps for gasdermins. It improves the GSDMD example but not the bacterial gasdermin example, so try both;
+3. by 360°·i/n around the z-axis, to face the ring axis.
 
-# Rank by total energy instead of pore quality (not recommended)
-barrel-optimize --monomer monomer_aligned.pdb --n_subunits 24 \
-    --rank_by total_score
+The copy is then placed at a distance **radius** from the ring axis. The radius is therefore the distance from the ring axis to each protomer's center of geometry. It is not the radius of the pore lumen, which is smaller. The assembled ring is centered at the origin with the pore axis along z. Up to 52 protomers are supported (chain IDs A–Z, a–z).
 
-# Gasdermin optimization
-barrel-optimize --monomer gasdermin_aligned.pdb --n_subunits 30 \
-    --gasdermin --processes 16
-```
+### 3. Scoring and screening (`barrel-optimize`)
 
-## Example Workflow
+Each assembly is scored as is, with no minimization or repacking, using the reweighted PyRosetta terms listed above. `total_score` is their weighted sum; lower is better.
 
-Here's a complete example for building an optimized 24-mer ring:
+The screen evaluates a grid of radius × tilt angle, 10 × 10 by default, in parallel. Each further round is centered on the mean of the two best geometries, with the range narrowed to ± one grid step. The default radius range is 60–100 % of an estimate in which the protomers' widths along y just add up to the ring circumference. The best evaluated geometry is written as a PDB file and should be treated as a starting point for manual evaluation.
 
-```bash
-# 1. Align the monomer
-barrel-align --input monomer.pdb --output monomer_aligned.pdb
-
-# 2. Run optimization to find best parameters (pore quality focused)
-barrel-optimize --monomer monomer_aligned.pdb --n_subunits 24 \
-    --rounds 3 --processes 8
-
-# 3. (optional) Build with manually adjusted parameters after visual assessment
-barrel-build --input monomer_aligned.pdb --output final_ring_24mer.pdb \
-    --n_subunits 24 --radius 82.5 --tilt_angle -12.3 --z_offset 2.0 --score
-```
-
-Or use the example workflow script:
-
-```bash
-python examples/example_workflow.py --input monomer.pdb --n_subunits 24 --rounds 3
-```
-
-## Output Files
-
-- **Aligned monomer**: `aligned_*.pdb` - Monomer in standard orientation
-- **Optimization results**: `round{N}_results.csv` - Scored parameter combinations for each round
-- **Final ring**: `optimized_ring_*.pdb` - Best ring assembly found
-
-## Optimization Parameters
-
-The optimization module explores three key parameters:
-
-- **Radius**: Distance from ring center to subunit center (Angstroms)
-- **Tilt angle**: Beta-sheet rotation around x-axis (degrees). Beta-barrels are often tilted and don't face 'straight down'. 
-- **Z-offset**: Alternating vertical displacement between adjacent subunits (Angstroms). In real beta barrels, adjacent strands are staggered along the barrel axis to allow proper hydrogen bonding.
-
-The scoring function evaluates:
-- `fa_atr`: Attractive forces between atoms (weight: 0.9)
-- `fa_rep`: Repulsive forces between atoms (weight: 0.02, allowing minor overlaps)
-- `hbond_sr_bb`: Short-range backbone hydrogen bonds (weight: 1.0)
-- `hbond_lr_bb`: Long-range backbone hydrogen bonds (weight: 10.0, prioritized)
-
-The scores are reweighted empirically to recreate some known beta-barrel structures.
-
-### Pore Quality Score
-
-By default, results are ranked by `pore_quality` rather than `total_score`. The pore quality metric heavily weights inter-subunit backbone hydrogen bonds (`hbond_lr_bb`), which are the hallmark of a well-formed beta-barrel pore. This ensures the optimizer finds geometries that produce proper beta-sheet hydrogen bonding across subunits, not just the lowest total energy.
-
-## Command-Line Options
+## Command-line reference
 
 ### `barrel-align`
-- `--input`: Input PDB file (required)
-- `--output`: Output aligned PDB file (optional)
+- `--input`: single-protomer PDB file (required)
+- `--output`: aligned PDB file (default: `aligned_<input name>` in the working directory)
 
 ### `barrel-build`
-- `--input`: Input aligned monomer PDB (required)
-- `--output`: Output ring PDB file (required)
-- `--n_subunits`: Number of subunits in ring (default: 30)
-- `--radius`: Ring radius in Angstroms (default: 120.0)
-- `--tilt_angle`: Tilt angle in degrees (default: -16.0)
-- `--z_offset`: Alternating z-offset between adjacent subunits in Angstroms (default: 0.0)
-- `--score`: Calculate PyRosetta scores
-- `--gasdermin`: Enable 10 degree rotation around the y-axis
+- `--input`: aligned protomer PDB file (required)
+- `--output`: output PDB file for the ring (required)
+- `--n_subunits`: number of protomers, 2–52 (default: 30)
+- `--radius`: distance from ring axis to protomer center of geometry in Å (default: 120.0)
+- `--tilt_angle`: tilt angle around the x-axis in degrees (default: -16.0)
+- `--gasdermin`: apply the additional 10° rotation around the y-axis
+- `--score`: score the ring with PyRosetta and print the weighted terms
 
 ### `barrel-optimize`
-- `--monomer`: Aligned monomer PDB file (required)
-- `--n_subunits`: Number of subunits in ring (required)
-- `--radius_range`: Min and max radius values (default: adaptive)
-- `--angle_range`: Min and max tilt angles (default: -30 30)
-- `--z_offset_range`: Min and max z-offsets (default: 0 5)
-- `--grid_size`: Points per dimension per round (default: 8)
-- `--rounds`: Number of optimization rounds (default: 3)
-- `--rank_by`: Score to rank by: `pore_quality` (default) or `total_score`
-- `--processes`: Number of parallel processes (default: all cores)
-- `--no_csv`: Don't save CSV results
-- `--gasdermin`: Enable gasdermin-specific y-axis rotation
+- `--monomer`: aligned protomer PDB file (required)
+- `--n_subunits`: number of protomers, 2–52 (required)
+- `--radius_range`: min and max radius in Å (default: 60–100 % of the estimated radius)
+- `--angle_range`: min and max tilt angle in degrees (default: -30 30)
+- `--grid_size`: grid points per dimension and round (default: 10)
+- `--rounds`: number of refinement rounds (default: 2)
+- `--processes`: number of parallel processes (default: all cores)
+- `--gasdermin`: apply the additional 10° rotation around the y-axis
+- `--no_csv`: do not write the per-round CSV files
 
-### Python API
+The scripts `alignment_module.py`, `ring_builder.py` and `optimization_module.py` in the repository root accept the same options as the corresponding commands.
 
-After installation, the package can also be used as a library:
+## Output files
+
+- `barrel-align`: the aligned protomer
+- `barrel-optimize`, written to the working directory:
+  - `round{N}_results.csv` (N = 0, 1, ...): every evaluated geometry with `radius`, `tilt_angle`, `total_score` and the weighted terms `fa_atr`, `fa_rep`, `hbond_sr_bb` and `hbond_lr_bb`, sorted by `total_score`
+  - `optimized_ring_<radius>A_<tilt>deg.pdb`: the best evaluated geometry
+- `barrel-build`: the ring; with `--score`, the weighted terms are printed
+
+## Python API
 
 ```python
 from barrel_builder import align_monomer_from_file, RingBuilder, RingOptimizer
+
+align_monomer_from_file("protomer.pdb", "protomer_aligned.pdb")
+
+builder = RingBuilder("protomer_aligned.pdb", gasdermin=True)
+builder.build_ring(n_subunits=33, radius=128.0, tilt_angle=-20.0)
+builder.write_ring_pdb("ring_33mer.pdb")
+scores = builder.score_ring()  # requires PyRosetta
 ```
+
+See [examples/example_workflow.py](examples/example_workflow.py) for the complete workflow.
 
 ## Testing
 
 ```bash
-pip install pytest
-python -m pytest tests/ -v
+python -m pytest tests/
 ```
 
-## Tips for Best Results
+The scoring test is skipped if PyRosetta is not installed.
 
-1. **Monomer preparation**: Ensure your input monomer is a clean, single-chain structure
-2. **Optimization rounds**: More rounds give finer results but take longer (3 rounds usually sufficient)
-3. **Parameter ranges**: Start with default ranges; narrow them based on initial results
-4. **Z-offset**: For beta-barrels with strong inter-subunit hydrogen bonds, try z_offset values of 1-4 Angstroms
-5. **Ranking**: Use `pore_quality` (default) to prioritize pore formation quality over raw energy minimization
+## References for the example structures
+
+- **6VFE**: Xia, S., Zhang, Z., Magupalli, V.G., Pablo, J.L., Dong, Y., Vora, S.M., Wang, L., Fu, T.M., Jacobson, M.P., Greka, A., Lieberman, J., Ruan, J. & Wu, H. Gasdermin D pore structure reveals preferential release of mature interleukin-1. *Nature* **593**, 607–611 (2021). https://doi.org/10.1038/s41586-021-03478-3
+- **8SL0** and the integrative 52-mer pore model **9A84** (PDB-IHM): Johnson, A.G., Mayer, M.L., Schaefer, S.L., McNamara-Bordewick, N.K., Hummer, G. & Kranzusch, P.J. Structure and assembly of a bacterial gasdermin pore. *Nature* **628**, 657–663 (2024). https://doi.org/10.1038/s41586-024-07216-3
 
 ## License
 
-This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the BSD 3-Clause License; see the [LICENSE](LICENSE) file for details. PyRosetta is subject to its own license.
 
 ## Acknowledgments
 
-This tool uses:
-- PyRosetta for energy calculations
-- MDAnalysis for structure manipulation
-- NumPy, SciPy, and scikit-learn for computational geometry
+This tool uses PyRosetta for scoring, MDAnalysis (including its DSSP implementation) for structure handling, Biopython for reading PDB/mmCIF files, and NumPy, SciPy, scikit-learn and pandas.
