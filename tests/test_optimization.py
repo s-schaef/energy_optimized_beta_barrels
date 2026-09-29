@@ -28,10 +28,9 @@ class TestRingOptimizer:
         opt16 = RingOptimizer(monomer_pdb, n_subunits=16)
         assert opt16.base_radius > opt8.base_radius
 
-    def test_gasdermin_flag_reaches_builder(self, monomer_pdb):
-        opt = RingOptimizer(monomer_pdb, n_subunits=8, gasdermin=True)
-        assert opt.gasdermin is True
-        assert opt.builder.gasdermin is True
+    def test_cone_angle_stored(self, monomer_pdb):
+        assert RingOptimizer(monomer_pdb, n_subunits=8).cone_angle == 0.0
+        assert RingOptimizer(monomer_pdb, n_subunits=8, cone_angle=10.0).cone_angle == 10.0
 
     def test_n_processes_capped(self, monomer_pdb):
         import multiprocessing as mp

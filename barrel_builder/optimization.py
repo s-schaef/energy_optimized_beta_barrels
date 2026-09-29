@@ -52,7 +52,7 @@ def evaluate_single_geometry(args_tuple):
     """
     suppress_worker_cleanup()
 
-    params, monomer_pdb, n_subunits, gasdermin = args_tuple
+    params, monomer_pdb, n_subunits, cone_angle = args_tuple
 
     warnings.filterwarnings('ignore')
 
@@ -63,12 +63,13 @@ def evaluate_single_geometry(args_tuple):
     sys.stderr = devnull
 
     try:
-        builder = RingBuilder(monomer_pdb, gasdermin=gasdermin)
+        builder = RingBuilder(monomer_pdb)
 
         builder.build_ring(
             n_subunits=n_subunits,
             radius=params['radius'],
             tilt_angle=params['tilt_angle'],
+            cone_angle=cone_angle,
         )
         scores = builder.score_ring()
         scores.update(params)
@@ -90,17 +91,18 @@ class RingOptimizer:
     """
     Screen ring geometries with a parallel coarse-to-fine grid search.
 
-    Explores radius and tilt_angle for a fixed number of subunits and ranks
-    the rigid-body assemblies by the reweighted PyRosetta total_score. This is
+    Explores radius and tilt_angle for a fixed number of subunits (and a
+    fixed cone angle) and ranks the rigid-body assemblies by the reweighted
+    PyRosetta total_score. This is
     a coarse screen: no minimization is performed and the scores are not
     physical energies.
     """
 
     def __init__(self, monomer_pdb: str, n_subunits: int,
-                 gasdermin: bool = False, n_processes: int = None):
+                 cone_angle: float = 0.0, n_processes: int = None):
         self.monomer_pdb = os.path.abspath(monomer_pdb)
         self.n_subunits = n_subunits
-        self.gasdermin = gasdermin
+        self.cone_angle = cone_angle
 
         if n_processes is None:
             self.n_processes = mp.cpu_count()
@@ -109,7 +111,7 @@ class RingOptimizer:
 
         print(f"Using {self.n_processes} processes for parallel optimization")
 
-        self.builder = RingBuilder(self.monomer_pdb, gasdermin=self.gasdermin)
+        self.builder = RingBuilder(self.monomer_pdb)
 
         self.base_radius = self._calculate_base_radius()
         print(f"Estimated base radius: {self.base_radius:.2f} A")
@@ -142,7 +144,7 @@ class RingOptimizer:
         print(f"Evaluating {total} parameter combinations using {self.n_processes} processes...")
 
         work_items = [
-            (params, self.monomer_pdb, self.n_subunits, self.gasdermin)
+            (params, self.monomer_pdb, self.n_subunits, self.cone_angle)
             for params in parameter_combinations
         ]
 
@@ -193,6 +195,7 @@ class RingOptimizer:
                     n_subunits=self.n_subunits,
                     radius=params['radius'],
                     tilt_angle=params['tilt_angle'],
+                    cone_angle=self.cone_angle,
                 )
                 scores = self.builder.score_ring()
                 scores.update(params)
@@ -255,7 +258,7 @@ class RingOptimizer:
         total_combinations = grid_size ** 2 * optimization_rounds
         print("=" * 70)
         print(f"Screening: {total_combinations} total evaluations over "
-              f"{optimization_rounds} rounds")
+              f"{optimization_rounds} rounds (cone angle fixed at {self.cone_angle:.1f} deg)")
         print("=" * 70)
 
         best_result = None
@@ -303,6 +306,7 @@ class RingOptimizer:
         print("Best evaluated geometry:")
         print(f"  Radius:     {best_result['radius']:.2f} A")
         print(f"  Tilt angle: {best_result['tilt_angle']:.2f} deg")
+        print(f"  Cone angle: {self.cone_angle:.2f} deg (fixed)")
         print(f"  Total score: {best_result['total_score']:.2f}")
         for term, weight in SCORE_WEIGHTS.items():
             print(f"  {term}: {best_result[term]:.2f} (weight {weight})")
@@ -313,6 +317,7 @@ class RingOptimizer:
             n_subunits=self.n_subunits,
             radius=best_result['radius'],
             tilt_angle=best_result['tilt_angle'],
+            cone_angle=self.cone_angle,
         )
         self.builder.write_ring_pdb(output_pdb, centered=True)
         print("Inspect this model manually (e.g. against a cryo-EM density) before use.")
@@ -341,13 +346,14 @@ def main():
                         help='Number of processes (default: all cores)')
     parser.add_argument('--no_csv', action='store_true',
                         help='Do not save results to CSV files')
-    parser.add_argument('--gasdermin', action='store_true',
-                        help='Apply the additional 10 degree y-rotation used for gasdermins')
+    parser.add_argument('--cone_angle', type=float, default=0.0,
+                        help='Fixed rotation around the tangential (y) axis in degrees; '
+                             'positive values make the ring narrower at the bottom (default: 0.0)')
 
     args = parser.parse_args()
 
     optimizer = RingOptimizer(
-        args.monomer, args.n_subunits, args.gasdermin, n_processes=args.processes
+        args.monomer, args.n_subunits, cone_angle=args.cone_angle, n_processes=args.processes
     )
 
     try:

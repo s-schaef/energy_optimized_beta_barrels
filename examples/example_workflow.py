@@ -12,9 +12,9 @@ Usage (after `pip install -e .`), e.g. with the protomer extracted by
 run_6vfe_gsdmd.sh:
 
     python examples/example_workflow.py --input examples/output/6vfe/gsdmd_protomer.pdb \\
-        --n_subunits 33 --gasdermin
+        --n_subunits 33 --cone_angle 10
     python examples/example_workflow.py --input examples/output/6vfe/gsdmd_protomer.pdb \\
-        --n_subunits 33 --gasdermin --skip_screen --radius 128 --tilt_angle -20
+        --n_subunits 33 --cone_angle 10 --skip_screen --radius 128 --tilt_angle -20
 """
 
 import os
@@ -23,7 +23,7 @@ from barrel_builder import align_monomer_from_file, RingOptimizer, RingBuilder
 
 
 def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 2,
-                 gasdermin: bool = False, processes: int = None,
+                 cone_angle: float = 0.0, processes: int = None,
                  skip_screen: bool = False, radius: float = None,
                  tilt_angle: float = None):
     """Run the alignment -> screen -> build workflow."""
@@ -42,7 +42,7 @@ def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 2,
         optimizer = RingOptimizer(
             aligned_pdb,
             n_subunits=n_subunits,
-            gasdermin=gasdermin,
+            cone_angle=cone_angle,
             n_processes=processes,
         )
         best = optimizer.optimize(optimization_rounds=rounds)
@@ -52,9 +52,10 @@ def run_workflow(input_pdb: str, n_subunits: int, rounds: int = 2,
         print("STEP 3: Building ring with chosen parameters")
         print("=" * 70)
         final_pdb = f"ring_{n_subunits}mer_{radius:.1f}A_{tilt_angle:.1f}deg.pdb"
-        builder = RingBuilder(aligned_pdb, gasdermin=gasdermin)
+        builder = RingBuilder(aligned_pdb)
         builder.output_pdb = final_pdb
-        builder.build_ring(n_subunits=n_subunits, radius=radius, tilt_angle=tilt_angle)
+        builder.build_ring(n_subunits=n_subunits, radius=radius, tilt_angle=tilt_angle,
+                           cone_angle=cone_angle)
         scores = builder.score_ring()
         print(f"Total score: {scores['total_score']:.2f}")
         print(f"Ring written to {final_pdb}")
@@ -69,8 +70,8 @@ if __name__ == "__main__":
                         help='Number of subunits in the ring')
     parser.add_argument('--rounds', type=int, default=2,
                         help='Screening rounds (default: 2)')
-    parser.add_argument('--gasdermin', action='store_true',
-                        help='Apply the additional 10 degree y-rotation used for gasdermins')
+    parser.add_argument('--cone_angle', type=float, default=0.0,
+                        help='Rotation around the tangential (y) axis in degrees (default: 0.0)')
     parser.add_argument('--processes', type=int, default=None,
                         help='Number of parallel processes')
     parser.add_argument('--skip_screen', action='store_true',
@@ -79,5 +80,5 @@ if __name__ == "__main__":
     parser.add_argument('--tilt_angle', type=float, help='Tilt angle for the final ring (deg)')
 
     args = parser.parse_args()
-    run_workflow(args.input, args.n_subunits, args.rounds, args.gasdermin,
+    run_workflow(args.input, args.n_subunits, args.rounds, args.cone_angle,
                  args.processes, args.skip_screen, args.radius, args.tilt_angle)
